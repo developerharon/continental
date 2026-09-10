@@ -5,6 +5,8 @@ game — it's a demonstration that city-level behavior can emerge from individua
 per-agent decision loops. Every agent's behavior should be explainable from its current
 state at any tick.
 
+![An agent selected on the grid, showing its hunger/energy bars and recent activity log](docs/screenshots/agent-details-panel.png)
+
 Each agent runs the same decision loop every tick:
 
 ```
@@ -21,7 +23,8 @@ randomness.
 cargo run
 ```
 
-opens a window showing an agent ticking once a second. `cargo test` runs the unit tests.
+opens a window showing an agent ticking once a second. Click the agent or the house on
+the grid to see its details in the side panel. `cargo test` runs the unit tests.
 
 ## License
 
