@@ -1,9 +1,12 @@
-//! Milestone 2 UI: a thin macroquad rendering pass over `continental::Agent`'s
+//! Milestone 3/4 UI: a thin macroquad rendering pass over `continental::Agent`'s
 //! tick loop. It reads `Agent` state each frame through its public accessors
-//! and draws it — it adds no decision logic of its own. Both needs (hunger,
-//! energy) are drawn now.
+//! and draws it — it adds no decision logic of its own. The agent sits on a
+//! 10x10 grid instead of a free pixel position. The grid's House square is
+//! still just a static placeholder (milestone 3) — the ownership constraint
+//! milestone 4 actually added lives in `agent.rs`; this demo agent claims a
+//! *separate* House (unconnected to the grid square) so it can still rest.
 
-use continental::{Agent, ENERGY_MAX, HUNGER_MAX};
+use continental::{Agent, ENERGY_MAX, HUNGER_MAX, House};
 use macroquad::prelude::*;
 
 /// Seconds of real time between ticks, so needs visibly change over time
@@ -16,17 +19,34 @@ const ACTION_FLASH_SECS: f32 = 0.4;
 /// within the ~1s gap before the next tick.
 const BAR_ANIM_SPEED: f32 = 6.0;
 
-const BAR_X: f32 = 160.0;
+const BAR_X: f32 = 360.0;
 const BAR_W: f32 = 260.0;
 const BAR_H: f32 = 22.0;
 const HUNGER_BAR_Y: f32 = 78.0;
 const ENERGY_BAR_Y: f32 = 168.0;
 
+/// Grid the agent and world objects sit on. Coordinates are (col, row),
+/// each in `0..GRID_COLS`/`0..GRID_ROWS`.
+const GRID_COLS: i32 = 10;
+const GRID_ROWS: i32 = 10;
+const CELL_SIZE: f32 = 32.0;
+const GRID_X: f32 = 20.0;
+const GRID_Y: f32 = 20.0;
+
+/// The agent's fixed position on the grid. No movement yet — that's a
+/// later milestone — so this is just where it's drawn every frame.
+const AGENT_GRID_POS: (i32, i32) = (2, 3);
+/// Where the House placeholder sits. Still just a static square on the
+/// grid, not connected to `agent.home()` or any ownership logic — wiring
+/// the grid itself up to ownership (e.g. recoloring this square once it's
+/// actually claimed) is future UI work, not part of this pass.
+const HOUSE_GRID_POS: (i32, i32) = (7, 6);
+
 fn window_conf() -> Conf {
     Conf {
-        window_title: "Continental — milestone 2".to_owned(),
-        window_width: 480,
-        window_height: 260,
+        window_title: "Continental — milestone 3".to_owned(),
+        window_width: 640,
+        window_height: 400,
         ..Default::default()
     }
 }
@@ -34,6 +54,11 @@ fn window_conf() -> Conf {
 #[macroquad::main(window_conf)]
 async fn main() {
     let mut agent = Agent::new("Agent-0");
+    // Milestone 4 made owning a house a precondition for Rest, and agents
+    // now start without one. Grant this demo agent one up front so it can
+    // still rest, same as before — the grid's gray House square (below)
+    // isn't this one; it's still just an unconnected placeholder.
+    agent.claim_house(House::new());
     let mut tick_timer = 0.0;
     let mut eat_flash_timer = 0.0;
     let mut rest_flash_timer = 0.0;
@@ -90,6 +115,44 @@ fn ease_toward(current: f32, target: f32, dt: f32, speed: f32) -> f32 {
     current + (target - current) * (1.0 - (-speed * dt).exp())
 }
 
+/// Converts a grid cell `(col, row)` to the screen-space center point of
+/// that cell.
+fn grid_to_screen((col, row): (i32, i32)) -> (f32, f32) {
+    (
+        GRID_X + (col as f32 + 0.5) * CELL_SIZE,
+        GRID_Y + (row as f32 + 0.5) * CELL_SIZE,
+    )
+}
+
+/// Draws the grid the agent and world objects sit on: an outer border plus
+/// internal lines at each cell boundary.
+fn draw_grid() {
+    let grid_w = CELL_SIZE * GRID_COLS as f32;
+    let grid_h = CELL_SIZE * GRID_ROWS as f32;
+
+    for col in 1..GRID_COLS {
+        let x = GRID_X + col as f32 * CELL_SIZE;
+        draw_line(x, GRID_Y, x, GRID_Y + grid_h, 1.0, DARKGRAY);
+    }
+    for row in 1..GRID_ROWS {
+        let y = GRID_Y + row as f32 * CELL_SIZE;
+        draw_line(GRID_X, y, GRID_X + grid_w, y, 1.0, DARKGRAY);
+    }
+
+    draw_rectangle_lines(GRID_X, GRID_Y, grid_w, grid_h, 2.0, WHITE);
+}
+
+/// Draws the House placeholder at `pos`: a gray square signaling "exists,
+/// unclaimed". Purely decorative — not connected to `agent.home()` or any
+/// ownership logic, and there's no "walk to house" here. `agent.rs` has the
+/// real ownership constraint now (milestone 4); wiring this square up to
+/// it is separate UI work, not done in this pass.
+fn draw_house(pos: (i32, i32)) {
+    let (cx, cy) = grid_to_screen(pos);
+    let size = CELL_SIZE - 8.0;
+    draw_rectangle(cx - size / 2.0, cy - size / 2.0, size, size, GRAY);
+}
+
 /// Draws the agent as a circle plus each need as a number and a 0-100 bar.
 /// Read-only: takes `&Agent` and never mutates or advances simulation state.
 /// `displayed_hunger`/`displayed_energy` are the eased bar-fill values from
@@ -103,6 +166,9 @@ fn draw_agent(
 ) {
     clear_background(Color::from_rgba(24, 24, 28, 255));
 
+    draw_grid();
+    draw_house(HOUSE_GRID_POS);
+
     let agent_color = if eating {
         YELLOW
     } else if resting {
@@ -110,8 +176,15 @@ fn draw_agent(
     } else {
         SKYBLUE
     };
-    draw_circle(80.0, 130.0, 28.0, agent_color);
-    draw_text(agent.name(), 55.0, 175.0, 20.0, WHITE);
+    let (agent_x, agent_y) = grid_to_screen(AGENT_GRID_POS);
+    draw_circle(agent_x, agent_y, 12.0, agent_color);
+    draw_text(
+        agent.name(),
+        GRID_X,
+        GRID_Y + CELL_SIZE * GRID_ROWS as f32 + 24.0,
+        20.0,
+        WHITE,
+    );
 
     draw_need_bar(
         NeedBar {

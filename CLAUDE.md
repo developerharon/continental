@@ -18,13 +18,20 @@ later step seems easy or related.
 
 1. Single agent, single need (hunger), tick loop — **DONE**, see [src/agent.rs](src/agent.rs)
 2. Second need (energy) + priority comparison between needs — **DONE**, see [src/agent.rs](src/agent.rs)
-3. A world object (e.g. `House`) agents can own — **next up**
+3. A world object (e.g. `House`) agents can own — **DONE**, see [src/house.rs](src/house.rs)
 4. Ownership constraint: an agent can only use a resource it owns (e.g. rest only works in
-   your own house). This step is deliberately where Rust ownership/borrowing is meant to
-   get interesting — don't paper over it with `Rc<RefCell<>>` shortcuts without flagging
-   the tradeoff explicitly and discussing it first.
-5. Career/job as agent state (enum), gating which production action is available
-6. Production actions (farmer produces food, builder produces houses)
+   your own house) — **DONE**, see [src/agent.rs](src/agent.rs). `home` is now
+   `Option<House>` — agents start without one, `claim_house` grants it, and `select` only
+   ever picks Rest if `home.is_some()`. Still a plain owned field, no `Rc<RefCell<>>`: at
+   one-agent scale that's honest, not a shortcut. The real tension this step was flagged
+   for — sharing a house safely once *multiple* agents can each own/contend for houses —
+   is deferred to step 7 on purpose, where it'll need an actual design conversation
+   (registry + id/reference? something else?) rather than being pre-solved here.
+5. Career/job as agent state (enum), gating which production action is available —
+   **DONE**, see [src/career.rs](src/career.rs). Data-model only, same as step 3's House:
+   `Career::production_action()` says what's available, but nothing calls it from `tick`
+   and there's no way to actually perform one yet. That's step 6.
+6. Production actions (farmer produces food, builder produces houses) — **next up**
 7. Scale to multiple agents with real contention over shared resources
 8. (stretch, later) replace flat priority scoring with something closer to production
    rules / working memory, SOAR-inspired
@@ -72,10 +79,17 @@ can depend on the sim logic via plain `use continental::...` — no `[lib]`/`[[b
 section needed in Cargo.toml, Cargo infers this from the two entry points existing.
 
 - [Cargo.toml](Cargo.toml) — package manifest, edition 2024; `macroquad` is the only dep
-- [src/lib.rs](src/lib.rs) — library root; re-exports the public sim API (`Agent`, `HUNGER_MAX`)
+- [src/lib.rs](src/lib.rs) — library root; re-exports the public sim API (`Agent`,
+  `House`, `Career`, `ProductionAction`, `HUNGER_MAX`, `ENERGY_MAX`)
 - [src/agent.rs](src/agent.rs) — `Agent`, `Action`, `Urgency`, and the
   sense/evaluate/select/act/replan tick loop, plus its unit tests
-  (`#[cfg(test)] mod tests` at the bottom of the file)
+  (`#[cfg(test)] mod tests` at the bottom of the file). Also owns the ownership
+  constraint: `home: Option<House>`, granted via `claim_house`, gates Rest in `select`
+- [src/house.rs](src/house.rs) — `House`, the first world object an agent can own. Fields
+  get added only when a milestone actually needs them (still empty)
+- [src/career.rs](src/career.rs) — `Career` (an agent's job) and `ProductionAction`
+  (what a career unlocks). `Career::production_action()` is a pure query — not wired
+  into the decision loop; `Agent` just carries a `career: Career` field
 - [src/main.rs](src/main.rs) — macroquad UI only: reads `Agent` state each frame through
   its public accessors (`name()`, `hunger()`, `energy()`, `tick()`) and draws it. No
   decision logic lives here — `select`/`act`/`evaluate`/`replan` are private to
@@ -98,6 +112,10 @@ action triggers exactly at its threshold, its effect clamps at the need's bounds
 once there's more than one need competing — that priority comparison and any tiebreak are
 covered explicitly (see `higher_urgency_wins_when_both_needs_are_due` and
 `equal_urgency_breaks_the_tie_toward_hunger_deterministically` for the existing pattern).
+If an action has a precondition beyond its threshold (e.g. Rest requiring ownership), test
+both sides of it explicitly — that the action is unavailable without the precondition
+*and* available once it's met (see `resting_is_unavailable_without_a_house` /
+`resting_is_available_once_a_house_is_claimed`), not just the happy path.
 
 ## Commands
 

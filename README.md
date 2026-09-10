@@ -24,11 +24,11 @@ Built piece by piece, in order — each step compiles and runs before moving to 
 
 - [x] Single agent, single need (hunger), tick loop
 - [x] Second need (energy) + priority comparison between needs
-- [ ] A world object (e.g. `House`) agents can own
-- [ ] Ownership constraint: an agent can only use a resource it owns (e.g. rest only works
+- [x] A world object (e.g. `House`) agents can own
+- [x] Ownership constraint: an agent can only use a resource it owns (e.g. rest only works
       in your own house) — deliberately leans into Rust ownership/borrowing rather than
       papering over it with `Rc<RefCell<>>` shortcuts
-- [ ] Career/job as agent state (enum), gating which production action is available
+- [x] Career/job as agent state (enum), gating which production action is available
 - [ ] Production actions (farmer produces food, builder produces houses)
 - [ ] Scale to multiple agents with real contention over shared resources
 - [ ] (stretch, later) replace flat priority scoring with something closer to production
