@@ -6,6 +6,12 @@
 //! against yet — but the loop stays split into these stages on purpose, so
 //! milestone 2 (a second need + priority comparison) drops in without
 //! restructuring anything.
+//!
+//! The bottom of this file is a thin macroquad rendering pass over the tick
+//! loop above: it reads `Agent` state each frame and draws it. It doesn't add
+//! any decision logic of its own — `Agent`/`tick()` are untouched.
+
+use macroquad::prelude::*;
 
 /// How much hunger accumulates per tick if the agent doesn't eat.
 const HUNGER_DECAY_PER_TICK: f32 = 5.0;
@@ -83,9 +89,78 @@ impl Agent {
     }
 }
 
-fn main() {
+/// Seconds of real time between ticks, so hunger visibly changes over time
+/// instead of the whole run flashing by in one frame.
+const TICK_INTERVAL_SECS: f32 = 1.0;
+/// How long the "ate" flash stays on screen after a tick drops hunger.
+const EAT_FLASH_SECS: f32 = 0.4;
+
+fn window_conf() -> Conf {
+    Conf {
+        window_title: "Continental — milestone 1".to_owned(),
+        window_width: 480,
+        window_height: 240,
+        ..Default::default()
+    }
+}
+
+#[macroquad::main(window_conf)]
+async fn main() {
     let mut agent = Agent::new("Agent-0");
-    for _ in 0..20 {
-        agent.tick();
+    let mut tick_timer = 0.0;
+    let mut flash_timer = 0.0;
+
+    loop {
+        let dt = get_frame_time();
+        tick_timer += dt;
+        flash_timer = (flash_timer - dt).max(0.0);
+
+        if tick_timer >= TICK_INTERVAL_SECS {
+            tick_timer -= TICK_INTERVAL_SECS;
+            let hunger_before = agent.hunger;
+            agent.tick();
+            // tick() doesn't report which Action it picked, so infer the eat
+            // moment from the one observable effect Eat has: hunger drops.
+            // Idle + replan only ever raises hunger, so any decrease means Eat.
+            if agent.hunger < hunger_before {
+                flash_timer = EAT_FLASH_SECS;
+            }
+        }
+
+        draw_agent(&agent, flash_timer > 0.0);
+
+        next_frame().await;
+    }
+}
+
+/// Draws the agent as a circle plus its hunger as a number and a 0-100 bar.
+/// Read-only: takes `&Agent` and never mutates or advances simulation state.
+fn draw_agent(agent: &Agent, eating: bool) {
+    clear_background(Color::from_rgba(24, 24, 28, 255));
+
+    let agent_color = if eating { YELLOW } else { SKYBLUE };
+    draw_circle(80.0, 120.0, 28.0, agent_color);
+    draw_text(agent.name, 55.0, 170.0, 20.0, WHITE);
+
+    let (bar_x, bar_y, bar_w, bar_h) = (160.0, 110.0, 260.0, 22.0);
+    draw_text(
+        format!("hunger: {:.1}", agent.hunger),
+        bar_x,
+        bar_y - 12.0,
+        22.0,
+        WHITE,
+    );
+    draw_rectangle_lines(bar_x, bar_y, bar_w, bar_h, 2.0, WHITE);
+    let fill_w = bar_w * (agent.hunger / HUNGER_MAX).clamp(0.0, 1.0);
+    draw_rectangle(
+        bar_x,
+        bar_y,
+        fill_w,
+        bar_h,
+        if eating { YELLOW } else { ORANGE },
+    );
+
+    if eating {
+        draw_text("ATE!", bar_x, bar_y + bar_h + 26.0, 24.0, YELLOW);
     }
 }
