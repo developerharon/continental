@@ -200,6 +200,22 @@ fn hit_test((x, y): (f32, f32)) -> Option<Selected> {
     None
 }
 
+/// Draws `name` as a small nameplate centered under a grid object's point
+/// `(x, y)` — e.g. an agent's circle center. Uses `measure_text` to center
+/// it horizontally rather than guessing an offset, so it stays centered
+/// regardless of how long the name is.
+fn draw_agent_label(name: &str, x: f32, y: f32) {
+    const FONT_SIZE: f32 = 16.0;
+    let dims = measure_text(name, None, FONT_SIZE as u16, 1.0);
+    draw_text(
+        name,
+        x - dims.width / 2.0,
+        y + AGENT_RADIUS + dims.height + 4.0,
+        FONT_SIZE,
+        WHITE,
+    );
+}
+
 /// Draws the grid the agent and world objects sit on: an outer border plus
 /// internal lines at each cell boundary.
 fn draw_grid() {
@@ -272,13 +288,7 @@ fn draw_scene(
     if selected == Some(Selected::Agent) {
         draw_circle_lines(agent_x, agent_y, AGENT_RADIUS + 4.0, 2.0, WHITE);
     }
-    draw_text(
-        agent.name(),
-        GRID_X,
-        GRID_Y + CELL_SIZE * GRID_ROWS as f32 + 24.0,
-        20.0,
-        WHITE,
-    );
+    draw_agent_label(agent.name(), agent_x, agent_y);
 
     draw_details_panel(
         agent,
