@@ -127,7 +127,11 @@ section needed in Cargo.toml, Cargo infers this from the two entry points existi
   its public accessors (`name()`, `hunger()`, `energy()`, `tick()`) and draws it. No
   decision logic lives here — `select`/`act`/`evaluate`/`replan` are private to
   `agent.rs` on purpose, so the UI can't reach past the public API by accident. Still
-  drives a single `Agent` directly, not a `World` — multi-agent isn't in the running demo
+  drives a single `Agent` directly, not a `World` — multi-agent isn't in the running demo.
+  Grid objects are clickable (`hit_test` + `Selected`) and the right-side panel shows
+  whichever one is selected instead of always showing the one agent — `Selected` is a
+  plain two-variant enum for now (one agent, one house); once there's more than one of a
+  kind it'll need to carry an identifier instead of just a case
 
 As more need/world/agent types are added, keep following this pattern — one module per
 concern under `src/`, tests colocated with the code they cover — rather than growing any
