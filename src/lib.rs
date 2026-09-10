@@ -4,7 +4,9 @@
 //! decision logic of its own.
 
 mod agent;
+mod career;
 mod house;
 
 pub use agent::{Agent, ENERGY_MAX, HUNGER_MAX};
+pub use career::{Career, ProductionAction};
 pub use house::House;

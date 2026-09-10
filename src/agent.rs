@@ -3,7 +3,7 @@
 //! that decay over time; priority between them is decided by comparing or
 //! scoring those numbers — never by randomness.
 
-use crate::House;
+use crate::{Career, House, ProductionAction};
 
 /// How much hunger accumulates per tick if the agent doesn't eat.
 const HUNGER_DECAY_PER_TICK: f32 = 5.0;
@@ -55,6 +55,10 @@ pub struct Agent {
     /// `select` to mean something, rather than every agent trivially
     /// owning one from birth as milestone 3 had it.
     home: Option<House>,
+    /// The agent's job. Gates which production action is *available* — see
+    /// `Career`/`ProductionAction` docs. Not wired into `tick` yet; no
+    /// career currently changes agent behavior. That's milestone 6.
+    career: Career,
 }
 
 impl Agent {
@@ -64,6 +68,7 @@ impl Agent {
             hunger: 0.0,
             energy: ENERGY_MAX,
             home: None,
+            career: Career::default(),
         }
     }
 
@@ -91,6 +96,22 @@ impl Agent {
     /// pre-solved here.
     pub fn claim_house(&mut self, house: House) {
         self.home = Some(house);
+    }
+
+    pub fn career(&self) -> Career {
+        self.career
+    }
+
+    pub fn set_career(&mut self, career: Career) {
+        self.career = career;
+    }
+
+    /// Which production action this agent's career currently gates access
+    /// to, if any. Purely a data-model query — nothing yet calls this from
+    /// `tick`, and there's no way to actually perform it. Milestone 6 is
+    /// what wires a production action into the decision loop.
+    pub fn available_production_action(&self) -> Option<ProductionAction> {
+        self.career.production_action()
     }
 
     /// sense: read current state — the raw hunger and energy values.
@@ -292,6 +313,24 @@ mod tests {
             energy: 90.0,
         };
         assert_eq!(agent.select(urgency), Action::Rest);
+    }
+
+    #[test]
+    fn agents_start_unemployed() {
+        let agent = Agent::new("Test");
+        assert_eq!(agent.career(), Career::Unemployed);
+        assert_eq!(agent.available_production_action(), None);
+    }
+
+    #[test]
+    fn set_career_changes_the_available_production_action() {
+        let mut agent = Agent::new("Test");
+        agent.set_career(Career::Farmer);
+        assert_eq!(agent.career(), Career::Farmer);
+        assert_eq!(
+            agent.available_production_action(),
+            Some(ProductionAction::Farm)
+        );
     }
 
     #[test]
