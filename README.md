@@ -5,50 +5,23 @@ game — it's a demonstration that city-level behavior can emerge from individua
 per-agent decision loops. Every agent's behavior should be explainable from its current
 state at any tick.
 
-## Core mechanic
-
-Each agent runs a decision loop every tick:
+Each agent runs the same decision loop every tick:
 
 ```
 sense -> evaluate -> select -> act -> replan
 ```
 
-Needs (hunger, energy, work quota, etc.) are plain numbers that decay over time. Priority
-between needs/actions is decided by comparing or scoring those numbers — **never** by
-randomness. RNG is only used for world variation (e.g. resource spawn locations) or genuine
-tiebreaks between equal-priority actions.
+Needs (hunger, energy, ...) are plain numbers that decay over time, and priority between
+needs/actions is always decided by comparing or scoring those numbers — **never** by
+randomness.
 
-## Roadmap
-
-Built piece by piece, in order — each step compiles and runs before moving to the next:
-
-- [x] Single agent, single need (hunger), tick loop
-- [x] Second need (energy) + priority comparison between needs
-- [x] A world object (e.g. `House`) agents can own
-- [x] Ownership constraint: an agent can only use a resource it owns (e.g. rest only works
-      in your own house) — deliberately leans into Rust ownership/borrowing rather than
-      papering over it with `Rc<RefCell<>>` shortcuts
-- [x] Career/job as agent state (enum), gating which production action is available
-- [x] Production actions (farmer produces food, builder produces houses)
-- [x] Scale to multiple agents with real contention over shared resources
-- [x] (stretch, later) replace flat priority scoring with something closer to production
-      rules / working memory, SOAR-inspired — done in mechanism (an ordered rule list),
-      not the full SOAR picture (working memory, impasses, chunking)
-
-## Building and running
+## Running
 
 ```
 cargo run
 ```
 
-builds and opens a window showing the agent ticking once a second: hunger and energy each
-drawn as a number and a bar, with a brief flash when the agent eats or rests.
-
-```
-cargo test
-```
-
-runs the unit tests covering the decision loop's logic.
+opens a window showing an agent ticking once a second. `cargo test` runs the unit tests.
 
 ## License
 
