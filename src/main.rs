@@ -11,6 +11,10 @@ use macroquad::prelude::*;
 const TICK_INTERVAL_SECS: f32 = 1.0;
 /// How long an action's flash stays on screen after the tick that caused it.
 const ACTION_FLASH_SECS: f32 = 0.4;
+/// How fast each bar's on-screen fill eases toward the agent's real value —
+/// see `ease_toward`. Tuned so a tick's change visibly catches up well
+/// within the ~1s gap before the next tick.
+const BAR_ANIM_SPEED: f32 = 6.0;
 
 const BAR_X: f32 = 160.0;
 const BAR_W: f32 = 260.0;
@@ -33,6 +37,13 @@ async fn main() {
     let mut tick_timer = 0.0;
     let mut eat_flash_timer = 0.0;
     let mut rest_flash_timer = 0.0;
+    // Bar fills displayed on screen. These ease toward the agent's real
+    // hunger()/energy() every frame (see `ease_toward`) instead of jumping
+    // the moment a tick changes them, so e.g. Rest visibly fills the energy
+    // bar up rather than snapping it. The printed numbers stay exact — only
+    // the bar fill is smoothed.
+    let mut displayed_hunger = agent.hunger();
+    let mut displayed_energy = agent.energy();
 
     loop {
         let dt = get_frame_time();
@@ -57,15 +68,39 @@ async fn main() {
             }
         }
 
-        draw_agent(&agent, eat_flash_timer > 0.0, rest_flash_timer > 0.0);
+        displayed_hunger = ease_toward(displayed_hunger, agent.hunger(), dt, BAR_ANIM_SPEED);
+        displayed_energy = ease_toward(displayed_energy, agent.energy(), dt, BAR_ANIM_SPEED);
+
+        draw_agent(
+            &agent,
+            displayed_hunger,
+            displayed_energy,
+            eat_flash_timer > 0.0,
+            rest_flash_timer > 0.0,
+        );
 
         next_frame().await;
     }
 }
 
+/// Frame-rate-independent exponential ease of `current` toward `target`:
+/// closes roughly `1 - e^(-speed * dt)` of the remaining gap each frame, so
+/// the same `speed` produces the same catch-up time regardless of frame rate.
+fn ease_toward(current: f32, target: f32, dt: f32, speed: f32) -> f32 {
+    current + (target - current) * (1.0 - (-speed * dt).exp())
+}
+
 /// Draws the agent as a circle plus each need as a number and a 0-100 bar.
 /// Read-only: takes `&Agent` and never mutates or advances simulation state.
-fn draw_agent(agent: &Agent, eating: bool, resting: bool) {
+/// `displayed_hunger`/`displayed_energy` are the eased bar-fill values from
+/// the render loop — the numeric labels still read the agent's real state.
+fn draw_agent(
+    agent: &Agent,
+    displayed_hunger: f32,
+    displayed_energy: f32,
+    eating: bool,
+    resting: bool,
+) {
     clear_background(Color::from_rgba(24, 24, 28, 255));
 
     let agent_color = if eating {
@@ -79,18 +114,24 @@ fn draw_agent(agent: &Agent, eating: bool, resting: bool) {
     draw_text(agent.name(), 55.0, 175.0, 20.0, WHITE);
 
     draw_need_bar(
-        "hunger",
-        agent.hunger(),
-        HUNGER_MAX,
+        NeedBar {
+            label: "hunger",
+            label_value: agent.hunger(),
+            bar_value: displayed_hunger,
+            max: HUNGER_MAX,
+        },
         HUNGER_BAR_Y,
         ORANGE,
         eating,
         "ATE!",
     );
     draw_need_bar(
-        "energy",
-        agent.energy(),
-        ENERGY_MAX,
+        NeedBar {
+            label: "energy",
+            label_value: agent.energy(),
+            bar_value: displayed_energy,
+            max: ENERGY_MAX,
+        },
         ENERGY_BAR_Y,
         GREEN,
         resting,
@@ -98,28 +139,37 @@ fn draw_agent(agent: &Agent, eating: bool, resting: bool) {
     );
 }
 
-/// Draws one need's label, value, and a 0-`max` bar at `bar_y`. While
-/// `flashing`, the bar switches to yellow and `flash_label` appears beneath
-/// it — the same visible-moment treatment milestone 1 used for Eat, now
-/// shared by both needs instead of duplicated per need.
-fn draw_need_bar(
-    label: &str,
-    value: f32,
+/// One need's display inputs, grouped to keep `draw_need_bar`'s parameter
+/// list from growing every time a need gains another displayed value.
+struct NeedBar<'a> {
+    label: &'a str,
+    /// The agent's real, unsmoothed value — shown as the numeric label.
+    label_value: f32,
+    /// The eased display value the bar is filled to (see `ease_toward`).
+    bar_value: f32,
     max: f32,
+}
+
+/// Draws one need's label, a 0-`max` bar, at `bar_y`. While `flashing`, the
+/// bar switches to yellow and `flash_label` appears beneath it — the same
+/// visible-moment treatment milestone 1 used for Eat, now shared by both
+/// needs instead of duplicated per need.
+fn draw_need_bar(
+    need: NeedBar,
     bar_y: f32,
     normal_color: Color,
     flashing: bool,
     flash_label: &str,
 ) {
     draw_text(
-        format!("{label}: {value:.1}"),
+        format!("{}: {:.1}", need.label, need.label_value),
         BAR_X,
         bar_y - 12.0,
         22.0,
         WHITE,
     );
     draw_rectangle_lines(BAR_X, bar_y, BAR_W, BAR_H, 2.0, WHITE);
-    let fill_w = BAR_W * (value / max).clamp(0.0, 1.0);
+    let fill_w = BAR_W * (need.bar_value / need.max).clamp(0.0, 1.0);
     draw_rectangle(
         BAR_X,
         bar_y,
