@@ -1,105 +1,28 @@
-//! Milestone 1: a single agent with a single need (hunger), running the
-//! standing decision loop every tick: sense -> evaluate -> select -> act -> replan.
-//!
-//! Hunger is a plain number that decays over time. There's only one need and
-//! one action here, so "evaluate" and "select" don't have anything to compare
-//! against yet — but the loop stays split into these stages on purpose, so
-//! milestone 2 (a second need + priority comparison) drops in without
-//! restructuring anything.
-//!
-//! The bottom of this file is a thin macroquad rendering pass over the tick
-//! loop above: it reads `Agent` state each frame and draws it. It doesn't add
-//! any decision logic of its own — `Agent`/`tick()` are untouched.
+//! Milestone 2 UI: a thin macroquad rendering pass over `continental::Agent`'s
+//! tick loop. It reads `Agent` state each frame through its public accessors
+//! and draws it — it adds no decision logic of its own. Both needs (hunger,
+//! energy) are drawn now.
 
+use continental::{Agent, ENERGY_MAX, HUNGER_MAX};
 use macroquad::prelude::*;
 
-/// How much hunger accumulates per tick if the agent doesn't eat.
-const HUNGER_DECAY_PER_TICK: f32 = 5.0;
-/// Hunger level at or above which eating becomes the priority.
-const HUNGER_EAT_THRESHOLD: f32 = 60.0;
-/// How much a single Eat action reduces hunger by.
-const HUNGER_EAT_RELIEF: f32 = 40.0;
-/// Hunger is clamped to this range; 0 = fully fed, 100 = starving.
-const HUNGER_MAX: f32 = 100.0;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Action {
-    Eat,
-    Idle,
-}
-
-struct Agent {
-    name: &'static str,
-    hunger: f32,
-}
-
-impl Agent {
-    fn new(name: &'static str) -> Self {
-        Self { name, hunger: 0.0 }
-    }
-
-    /// sense: read current state. With one need this is just the raw value,
-    /// but it stays a named step so more state can be read here later.
-    fn sense(&self) -> f32 {
-        self.hunger
-    }
-
-    /// evaluate: turn sensed state into an urgency score. Trivial for a
-    /// single need (urgency == hunger), but kept separate from `select` so
-    /// milestone 2 can compare urgency across multiple needs here.
-    fn evaluate(&self, hunger: f32) -> f32 {
-        hunger
-    }
-
-    /// select: pick the winning action from evaluated urgency. Deterministic
-    /// threshold comparison only — never randomness, so the choice is always
-    /// explainable from `hunger` alone.
-    fn select(&self, urgency: f32) -> Action {
-        if urgency >= HUNGER_EAT_THRESHOLD {
-            Action::Eat
-        } else {
-            Action::Idle
-        }
-    }
-
-    /// act: apply the selected action's effect on state.
-    fn act(&mut self, action: Action) {
-        match action {
-            Action::Eat => self.hunger = (self.hunger - HUNGER_EAT_RELIEF).max(0.0),
-            Action::Idle => {}
-        }
-    }
-
-    /// replan: let needs progress (decay) so the next tick senses fresh
-    /// state instead of acting on a stale plan.
-    fn replan(&mut self) {
-        self.hunger = (self.hunger + HUNGER_DECAY_PER_TICK).min(HUNGER_MAX);
-    }
-
-    fn tick(&mut self) {
-        let sensed_hunger = self.sense();
-        let urgency = self.evaluate(sensed_hunger);
-        let action = self.select(urgency);
-        self.act(action);
-        println!(
-            "{}: hunger={:.1} -> {:?} -> hunger={:.1}",
-            self.name, sensed_hunger, action, self.hunger
-        );
-        self.replan();
-    }
-}
-
-/// Seconds of real time between ticks, so hunger visibly changes over time
+/// Seconds of real time between ticks, so needs visibly change over time
 /// instead of the whole run flashing by in one frame.
 const TICK_INTERVAL_SECS: f32 = 1.0;
-/// How long the "ate" flash stays on screen after a tick drops hunger.
-const EAT_FLASH_SECS: f32 = 0.4;
+/// How long an action's flash stays on screen after the tick that caused it.
+const ACTION_FLASH_SECS: f32 = 0.4;
+
+const BAR_X: f32 = 160.0;
+const BAR_W: f32 = 260.0;
+const BAR_H: f32 = 22.0;
+const HUNGER_BAR_Y: f32 = 78.0;
+const ENERGY_BAR_Y: f32 = 168.0;
 
 fn window_conf() -> Conf {
     Conf {
-        window_title: "Continental — milestone 1".to_owned(),
+        window_title: "Continental — milestone 2".to_owned(),
         window_width: 480,
-        window_height: 240,
+        window_height: 260,
         ..Default::default()
     }
 }
@@ -108,59 +31,104 @@ fn window_conf() -> Conf {
 async fn main() {
     let mut agent = Agent::new("Agent-0");
     let mut tick_timer = 0.0;
-    let mut flash_timer = 0.0;
+    let mut eat_flash_timer = 0.0;
+    let mut rest_flash_timer = 0.0;
 
     loop {
         let dt = get_frame_time();
         tick_timer += dt;
-        flash_timer = (flash_timer - dt).max(0.0);
+        eat_flash_timer = (eat_flash_timer - dt).max(0.0);
+        rest_flash_timer = (rest_flash_timer - dt).max(0.0);
 
         if tick_timer >= TICK_INTERVAL_SECS {
             tick_timer -= TICK_INTERVAL_SECS;
-            let hunger_before = agent.hunger;
+            let hunger_before = agent.hunger();
+            let energy_before = agent.energy();
             agent.tick();
-            // tick() doesn't report which Action it picked, so infer the eat
-            // moment from the one observable effect Eat has: hunger drops.
-            // Idle + replan only ever raises hunger, so any decrease means Eat.
-            if agent.hunger < hunger_before {
-                flash_timer = EAT_FLASH_SECS;
+            // tick() doesn't report which Action it picked, so infer which
+            // one ran from its one observable effect: Eat is the only thing
+            // that can drop hunger, Rest the only thing that can raise
+            // energy — Idle + replan only ever push both the other way.
+            if agent.hunger() < hunger_before {
+                eat_flash_timer = ACTION_FLASH_SECS;
+            }
+            if agent.energy() > energy_before {
+                rest_flash_timer = ACTION_FLASH_SECS;
             }
         }
 
-        draw_agent(&agent, flash_timer > 0.0);
+        draw_agent(&agent, eat_flash_timer > 0.0, rest_flash_timer > 0.0);
 
         next_frame().await;
     }
 }
 
-/// Draws the agent as a circle plus its hunger as a number and a 0-100 bar.
+/// Draws the agent as a circle plus each need as a number and a 0-100 bar.
 /// Read-only: takes `&Agent` and never mutates or advances simulation state.
-fn draw_agent(agent: &Agent, eating: bool) {
+fn draw_agent(agent: &Agent, eating: bool, resting: bool) {
     clear_background(Color::from_rgba(24, 24, 28, 255));
 
-    let agent_color = if eating { YELLOW } else { SKYBLUE };
-    draw_circle(80.0, 120.0, 28.0, agent_color);
-    draw_text(agent.name, 55.0, 170.0, 20.0, WHITE);
+    let agent_color = if eating {
+        YELLOW
+    } else if resting {
+        GREEN
+    } else {
+        SKYBLUE
+    };
+    draw_circle(80.0, 130.0, 28.0, agent_color);
+    draw_text(agent.name(), 55.0, 175.0, 20.0, WHITE);
 
-    let (bar_x, bar_y, bar_w, bar_h) = (160.0, 110.0, 260.0, 22.0);
+    draw_need_bar(
+        "hunger",
+        agent.hunger(),
+        HUNGER_MAX,
+        HUNGER_BAR_Y,
+        ORANGE,
+        eating,
+        "ATE!",
+    );
+    draw_need_bar(
+        "energy",
+        agent.energy(),
+        ENERGY_MAX,
+        ENERGY_BAR_Y,
+        GREEN,
+        resting,
+        "RESTED!",
+    );
+}
+
+/// Draws one need's label, value, and a 0-`max` bar at `bar_y`. While
+/// `flashing`, the bar switches to yellow and `flash_label` appears beneath
+/// it — the same visible-moment treatment milestone 1 used for Eat, now
+/// shared by both needs instead of duplicated per need.
+fn draw_need_bar(
+    label: &str,
+    value: f32,
+    max: f32,
+    bar_y: f32,
+    normal_color: Color,
+    flashing: bool,
+    flash_label: &str,
+) {
     draw_text(
-        format!("hunger: {:.1}", agent.hunger),
-        bar_x,
+        format!("{label}: {value:.1}"),
+        BAR_X,
         bar_y - 12.0,
         22.0,
         WHITE,
     );
-    draw_rectangle_lines(bar_x, bar_y, bar_w, bar_h, 2.0, WHITE);
-    let fill_w = bar_w * (agent.hunger / HUNGER_MAX).clamp(0.0, 1.0);
+    draw_rectangle_lines(BAR_X, bar_y, BAR_W, BAR_H, 2.0, WHITE);
+    let fill_w = BAR_W * (value / max).clamp(0.0, 1.0);
     draw_rectangle(
-        bar_x,
+        BAR_X,
         bar_y,
         fill_w,
-        bar_h,
-        if eating { YELLOW } else { ORANGE },
+        BAR_H,
+        if flashing { YELLOW } else { normal_color },
     );
 
-    if eating {
-        draw_text("ATE!", bar_x, bar_y + bar_h + 26.0, 24.0, YELLOW);
+    if flashing {
+        draw_text(flash_label, BAR_X, bar_y + BAR_H + 26.0, 24.0, YELLOW);
     }
 }
