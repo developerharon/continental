@@ -16,9 +16,9 @@ Built piece by piece, in this order. Each step must compile and run before movin
 next — do not jump ahead to a later milestone while working on an earlier one, even if the
 later step seems easy or related.
 
-1. Single agent, single need (hunger), tick loop — **DONE**, see [src/main.rs](src/main.rs)
-2. Second need (energy) + priority comparison between needs — **next up**
-3. A world object (e.g. `House`) agents can own
+1. Single agent, single need (hunger), tick loop — **DONE**, see [src/agent.rs](src/agent.rs)
+2. Second need (energy) + priority comparison between needs — **DONE**, see [src/agent.rs](src/agent.rs)
+3. A world object (e.g. `House`) agents can own — **next up**
 4. Ownership constraint: an agent can only use a resource it owns (e.g. rest only works in
    your own house). This step is deliberately where Rust ownership/borrowing is meant to
    get interesting — don't paper over it with `Rc<RefCell<>>` shortcuts without flagging
@@ -61,19 +61,43 @@ that's almost certainly the wrong place for it.
 
 - Small, compiling steps. Every change should build and run before moving on.
 - Don't implement later milestones early, even opportunistically.
-- Don't add a dependency without discussing it first — the crate currently has zero
-  dependencies (see [Cargo.toml](Cargo.toml)); adding one is a decision, not a default.
+- Don't add a dependency without discussing it first — `macroquad` (rendering) is
+  currently the only one (see [Cargo.toml](Cargo.toml)); adding another is a decision,
+  not a default.
 
 ## Layout
 
-Single binary crate, no dependencies yet:
-- [Cargo.toml](Cargo.toml) — package manifest, edition 2024, no deps
-- [src/main.rs](src/main.rs) — entry point; holds the `Agent` type and milestone 1's
-  sense/evaluate/select/act/replan tick loop (single agent, hunger need only)
+The package builds both a library and a binary from the same crate name, so `main.rs`
+can depend on the sim logic via plain `use continental::...` — no `[lib]`/`[[bin]]`
+section needed in Cargo.toml, Cargo infers this from the two entry points existing.
 
-No other modules, tests, or supporting files exist yet. As agent/world/need types are
-added, prefer splitting them into modules under `src/` rather than growing `main.rs`
-indefinitely — but don't pre-create module structure ahead of the code that needs it.
+- [Cargo.toml](Cargo.toml) — package manifest, edition 2024; `macroquad` is the only dep
+- [src/lib.rs](src/lib.rs) — library root; re-exports the public sim API (`Agent`, `HUNGER_MAX`)
+- [src/agent.rs](src/agent.rs) — `Agent`, `Action`, `Urgency`, and the
+  sense/evaluate/select/act/replan tick loop, plus its unit tests
+  (`#[cfg(test)] mod tests` at the bottom of the file)
+- [src/main.rs](src/main.rs) — macroquad UI only: reads `Agent` state each frame through
+  its public accessors (`name()`, `hunger()`, `energy()`, `tick()`) and draws it. No
+  decision logic lives here — `select`/`act`/`evaluate`/`replan` are private to
+  `agent.rs` on purpose, so the UI can't reach past the public API by accident.
+
+As more need/world/agent types are added, keep following this pattern — one module per
+concern under `src/`, tests colocated with the code they cover — rather than growing any
+one file indefinitely. Don't pre-create module structure ahead of the code that needs it.
+
+## Testing
+
+Unit tests live next to the logic they cover (currently just [src/agent.rs](src/agent.rs)),
+in a `#[cfg(test)] mod tests { use super::*; ... }` block, not a separate `tests/`
+directory — this lets tests reach private fields/methods directly (e.g. setting
+`agent.hunger` or calling `agent.select(...)` on a hand-built `Urgency`) instead of
+needing everything under test to be `pub`. Favor this style for new sim-logic tests too.
+
+When adding a new need/action, test at minimum: decay applies correctly when idle, the
+action triggers exactly at its threshold, its effect clamps at the need's bounds, and —
+once there's more than one need competing — that priority comparison and any tiebreak are
+covered explicitly (see `higher_urgency_wins_when_both_needs_are_due` and
+`equal_urgency_breaks_the_tie_toward_hunger_deterministically` for the existing pattern).
 
 ## Commands
 
@@ -81,7 +105,7 @@ indefinitely — but don't pre-create module structure ahead of the code that ne
 - Run: `cargo run`
 - Release build: `cargo build --release`
 - Test (all): `cargo test`
-- Test (single): `cargo test <test_name>`
+- Test (single): `cargo test <test_name>` (e.g. `cargo test eats_when_hunger_crosses_threshold`)
 - Lint: `cargo clippy`
 - Format: `cargo fmt`
 

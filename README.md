@@ -22,9 +22,9 @@ tiebreaks between equal-priority actions.
 
 Built piece by piece, in order — each step compiles and runs before moving to the next:
 
-1. Single agent, single need (hunger), tick loop — **DONE**, see `src/main.rs`
-2. Second need (energy) + priority comparison between needs — **next up**
-3. A world object (e.g. `House`) agents can own
+1. Single agent, single need (hunger), tick loop — **DONE**, see `src/agent.rs`
+2. Second need (energy) + priority comparison between needs — **DONE**, see `src/agent.rs`
+3. A world object (e.g. `House`) agents can own — **next up**
 4. Ownership constraint: an agent can only use a resource it owns (e.g. rest only works in
    your own house) — deliberately leans into Rust ownership/borrowing rather than papering
    over it with `Rc<RefCell<>>` shortcuts
@@ -54,7 +54,12 @@ GitHub Actions runs `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo 
 
 ## Project layout
 
-Single binary crate, no dependencies yet:
-- `Cargo.toml` — package manifest, edition 2024, no deps
-- `src/main.rs` — entry point; holds the `Agent` type and milestone 1's
-  sense/evaluate/select/act/replan tick loop (single agent, hunger need only)
+The package builds both a library and a binary from the same crate — `main.rs` depends on
+the sim logic via `use continental::...`:
+
+- `Cargo.toml` — package manifest, edition 2024; `macroquad` is the only dependency
+- `src/lib.rs` — library root; re-exports the public sim API
+- `src/agent.rs` — `Agent` and the sense/evaluate/select/act/replan tick loop, with unit
+  tests colocated in a `#[cfg(test)] mod tests` block
+- `src/main.rs` — macroquad UI only; reads `Agent` state each frame through its public
+  accessors and draws it (agent, hunger bar, energy bar) — no decision logic lives here
