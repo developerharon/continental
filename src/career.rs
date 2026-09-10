@@ -30,11 +30,12 @@ pub enum ProductionAction {
 
 impl Career {
     /// Which production action this career gates access to, if any.
-    pub fn production_action(self) -> Option<ProductionAction> {
+    #[must_use]
+    pub const fn production_action(self) -> Option<ProductionAction> {
         match self {
-            Career::Unemployed => None,
-            Career::Farmer => Some(ProductionAction::Farm),
-            Career::Builder => Some(ProductionAction::Build),
+            Self::Unemployed => None,
+            Self::Farmer => Some(ProductionAction::Farm),
+            Self::Builder => Some(ProductionAction::Build),
         }
     }
 }

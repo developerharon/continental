@@ -80,6 +80,7 @@ pub struct Agent {
 }
 
 impl Agent {
+    #[must_use]
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
@@ -91,23 +92,28 @@ impl Agent {
         }
     }
 
-    pub fn name(&self) -> &str {
+    #[must_use]
+    pub const fn name(&self) -> &str {
         self.name
     }
 
-    pub fn hunger(&self) -> f32 {
+    #[must_use]
+    pub const fn hunger(&self) -> f32 {
         self.hunger
     }
 
-    pub fn energy(&self) -> f32 {
+    #[must_use]
+    pub const fn energy(&self) -> f32 {
         self.energy
     }
 
-    pub fn food(&self) -> f32 {
+    #[must_use]
+    pub const fn food(&self) -> f32 {
         self.food
     }
 
-    pub fn home(&self) -> Option<&House> {
+    #[must_use]
+    pub const fn home(&self) -> Option<&House> {
         self.home.as_ref()
     }
 
@@ -117,27 +123,29 @@ impl Agent {
     /// houses between multiple agents; `Agent` itself never needs to know
     /// about any other agent to do that safely — it just accepts a house
     /// it's handed, one owner at a time.
-    pub fn claim_house(&mut self, house: House) {
+    pub const fn claim_house(&mut self, house: House) {
         self.home = Some(house);
     }
 
-    pub fn career(&self) -> Career {
+    #[must_use]
+    pub const fn career(&self) -> Career {
         self.career
     }
 
-    pub fn set_career(&mut self, career: Career) {
+    pub const fn set_career(&mut self, career: Career) {
         self.career = career;
     }
 
     /// Which production action this agent's career currently gates access
     /// to, if any. `select` uses this to fall back to work when neither
     /// survival need is due.
+    #[must_use]
     pub fn available_production_action(&self) -> Option<ProductionAction> {
         self.career.production_action()
     }
 
     /// sense: read current state — the raw hunger and energy values.
-    fn sense(&self) -> (f32, f32) {
+    const fn sense(&self) -> (f32, f32) {
         (self.hunger, self.energy)
     }
 
@@ -176,20 +184,16 @@ impl Agent {
             // Both survival needs due at once: higher urgency wins, hunger
             // on a tie — a direct comparison, never a coin flip.
             |agent, u| {
-                let hunger_due = u.hunger >= HUNGER_EAT_THRESHOLD;
-                let energy_due = u.energy >= ENERGY_REST_THRESHOLD && agent.home.is_some();
-                (hunger_due && energy_due).then_some(if u.hunger >= u.energy {
+                (agent.hunger_due(u) && agent.energy_due(u)).then_some(if u.hunger >= u.energy {
                     Action::Eat
                 } else {
                     Action::Rest
                 })
             },
             // Hunger alone is due.
-            |_, u| (u.hunger >= HUNGER_EAT_THRESHOLD).then_some(Action::Eat),
+            |agent, u| agent.hunger_due(u).then_some(Action::Eat),
             // Energy alone is due, and there's a house to rest in.
-            |agent, u| {
-                (u.energy >= ENERGY_REST_THRESHOLD && agent.home.is_some()).then_some(Action::Rest)
-            },
+            |agent, u| agent.energy_due(u).then_some(Action::Rest),
             // Neither survival need is pressing: do the job, if there is one.
             |agent, _| agent.available_production_action().map(Action::Produce),
         ];
@@ -198,6 +202,20 @@ impl Agent {
             .iter()
             .find_map(|rule| rule(self, &urgency))
             .unwrap_or(Action::Idle)
+    }
+
+    /// Whether hunger has crossed its threshold. Shared by more than one
+    /// rule in `select`, so the threshold check lives in exactly one place.
+    const fn hunger_due(&self, urgency: &Urgency) -> bool {
+        urgency.hunger >= HUNGER_EAT_THRESHOLD
+    }
+
+    /// Whether energy has crossed its threshold *and* the agent has a
+    /// house to rest in — see `select`'s ownership constraint docs. Shared
+    /// by more than one rule, so this (threshold + ownership together)
+    /// lives in exactly one place.
+    const fn energy_due(&self, urgency: &Urgency) -> bool {
+        urgency.energy >= ENERGY_REST_THRESHOLD && self.home.is_some()
     }
 
     /// act: apply the selected action's effect on this agent's own state,
@@ -234,6 +252,10 @@ impl Agent {
     /// Returns a house if this tick's action produced one — `Agent` has no
     /// way to know whether it needs one or another agent does, so it never
     /// keeps it; the caller is responsible for placing it (see `World`).
+    /// `#[must_use]` here isn't about purity (this call is all side
+    /// effects) — it's a guard against silently losing a produced house if
+    /// a future caller forgets to check the return value.
+    #[must_use]
     pub fn tick(&mut self) -> Option<House> {
         let (sensed_hunger, sensed_energy) = self.sense();
         let food_before = self.food;
@@ -263,7 +285,7 @@ mod tests {
     #[test]
     fn idle_tick_only_applies_decay() {
         let mut agent = Agent::new("Test");
-        agent.tick();
+        let _ = agent.tick();
         assert_eq!(agent.hunger, HUNGER_DECAY_PER_TICK);
         assert_eq!(agent.energy, ENERGY_MAX - ENERGY_DECAY_PER_TICK);
     }
@@ -272,7 +294,7 @@ mod tests {
     fn eats_when_hunger_crosses_threshold() {
         let mut agent = Agent::new("Test");
         agent.hunger = HUNGER_EAT_THRESHOLD;
-        agent.tick();
+        let _ = agent.tick();
         // Eat relieves hunger, then replan's decay still applies this tick.
         let expected = (HUNGER_EAT_THRESHOLD - HUNGER_EAT_RELIEF).max(0.0) + HUNGER_DECAY_PER_TICK;
         assert_eq!(agent.hunger, expected);
@@ -292,7 +314,7 @@ mod tests {
         agent.claim_house(House::new());
         // Urgency threshold 70 => due once energy <= ENERGY_MAX - 70 = 30.
         agent.energy = ENERGY_MAX - ENERGY_REST_THRESHOLD;
-        agent.tick();
+        let _ = agent.tick();
         let expected = (ENERGY_MAX - ENERGY_REST_THRESHOLD + ENERGY_REST_RELIEF).min(ENERGY_MAX)
             - ENERGY_DECAY_PER_TICK;
         assert_eq!(agent.energy, expected);
@@ -388,7 +410,7 @@ mod tests {
     fn energy_keeps_draining_when_the_agent_has_no_house_to_rest_in() {
         let mut agent = Agent::new("Test"); // no house claimed
         agent.energy = 0.0; // already exhausted, and stuck that way
-        agent.tick();
+        let _ = agent.tick();
         assert_eq!(agent.energy, 0.0);
     }
 

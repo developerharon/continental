@@ -24,13 +24,15 @@ pub struct World {
 }
 
 impl World {
-    pub fn new(agents: Vec<Agent>) -> Self {
+    #[must_use]
+    pub const fn new(agents: Vec<Agent>) -> Self {
         Self {
             agents,
             available_houses: Vec::new(),
         }
     }
 
+    #[must_use]
     pub fn agents(&self) -> &[Agent] {
         &self.agents
     }
