@@ -286,8 +286,13 @@ impl Agent {
         let urgency = self.evaluate(sensed_hunger, sensed_energy);
         let action = self.select(urgency);
         let produced_house = self.act(action);
+        // Plain ASCII "->" rather than an em dash: macroquad's default font
+        // doesn't have that glyph and renders it as a tofu box (visible in
+        // the UI's log panel) instead of failing loudly, so this is the
+        // kind of thing that's easy to miss without actually looking at it
+        // rendered.
         self.push_log(format!(
-            "{action:?} — H{sensed_hunger:.0} E{sensed_energy:.0} F{food_before:.0}"
+            "{action:?} -> H{sensed_hunger:.0} E{sensed_energy:.0} F{food_before:.0}"
         ));
         self.replan();
         produced_house
