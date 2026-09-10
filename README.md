@@ -29,10 +29,11 @@ Built piece by piece, in order — each step compiles and runs before moving to 
       in your own house) — deliberately leans into Rust ownership/borrowing rather than
       papering over it with `Rc<RefCell<>>` shortcuts
 - [x] Career/job as agent state (enum), gating which production action is available
-- [ ] Production actions (farmer produces food, builder produces houses)
-- [ ] Scale to multiple agents with real contention over shared resources
-- [ ] (stretch, later) replace flat priority scoring with something closer to production
-      rules / working memory, SOAR-inspired
+- [x] Production actions (farmer produces food, builder produces houses)
+- [x] Scale to multiple agents with real contention over shared resources
+- [x] (stretch, later) replace flat priority scoring with something closer to production
+      rules / working memory, SOAR-inspired — done in mechanism (an ordered rule list),
+      not the full SOAR picture (working memory, impasses, chunking)
 
 ## Building and running
 

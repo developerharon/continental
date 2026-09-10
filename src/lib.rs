@@ -6,7 +6,9 @@
 mod agent;
 mod career;
 mod house;
+mod world;
 
 pub use agent::{Agent, ENERGY_MAX, HUNGER_MAX};
 pub use career::{Career, ProductionAction};
 pub use house::House;
+pub use world::World;

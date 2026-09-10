@@ -31,10 +31,38 @@ later step seems easy or related.
    **DONE**, see [src/career.rs](src/career.rs). Data-model only, same as step 3's House:
    `Career::production_action()` says what's available, but nothing calls it from `tick`
    and there's no way to actually perform one yet. That's step 6.
-6. Production actions (farmer produces food, builder produces houses) — **next up**
-7. Scale to multiple agents with real contention over shared resources
+6. Production actions (farmer produces food, builder produces houses) — **DONE**, see
+   [src/agent.rs](src/agent.rs). `select` falls back to `Action::Produce(...)` when
+   neither survival need is due and a career allows it; `act` applies the effect —
+   Farm adds to `self.food` (a plain stockpile, nothing consumes it yet), Build produces
+   a `House` but does **not** self-claim it. `act` hands a built house back to its
+   caller instead, because deciding who gets it is step 7's job, not this one's.
+7. Scale to multiple agents with real contention over shared resources — **DONE**, see
+   [src/world.rs](src/world.rs). This is where step 4's deferred tension actually got
+   resolved: `World` holds `Vec<Agent>` plus a pool of unclaimed houses, and is the one
+   neutral party that moves a `House` between "in the pool" and "owned by an agent" via
+   plain `Vec::pop`/`push` — never two owners at once, so no `Rc<RefCell<>>` was needed.
+   Contention resolves by fixed agent order each tick (`World::tick`): a houseless agent
+   claims from the pool before acting, so when houses are scarcer than demand, whichever
+   agent comes first in the list gets one and the rest don't — deterministic, explainable
+   from agent order, never randomness. `main.rs` still only demos a single `Agent`
+   directly (not through `World`) — multi-agent is proven in [src/world.rs](src/world.rs)'s
+   tests, not yet in the running UI. That's a UI follow-up, not a logic gap.
 8. (stretch, later) replace flat priority scoring with something closer to production
-   rules / working memory, SOAR-inspired
+   rules / working memory, SOAR-inspired — **DONE (partial, deliberately)**, see
+   `Agent::select`. `select` is now an ordered list of condition-action rules (first
+   match wins) instead of a flat match — closer to SOAR-style production rules in
+   *mechanism*, and behaviorally identical to what it replaced (every prior test still
+   passes unchanged). This does **not** attempt real SOAR concepts — a working-memory
+   fact store, impasses/subgoaling, chunking/learning. Those are a substantial,
+   speculative undertaking that a one-line stretch-goal description doesn't justify
+   committing to unilaterally; if genuinely wanted, discuss the design first rather than
+   expanding this silently.
+
+All eight roadmap items are now done. Milestones 6-8 were implemented together in one
+batch at the user's explicit request (an exception to the usual one-at-a-time cadence),
+each still verified compiling/tested/linted before moving to the next internally. Where
+this repo goes next isn't yet defined — ask before assuming a direction.
 
 ## Standing architecture convention: the decision loop
 
@@ -80,20 +108,26 @@ section needed in Cargo.toml, Cargo infers this from the two entry points existi
 
 - [Cargo.toml](Cargo.toml) — package manifest, edition 2024; `macroquad` is the only dep
 - [src/lib.rs](src/lib.rs) — library root; re-exports the public sim API (`Agent`,
-  `House`, `Career`, `ProductionAction`, `HUNGER_MAX`, `ENERGY_MAX`)
-- [src/agent.rs](src/agent.rs) — `Agent`, `Action`, `Urgency`, and the
-  sense/evaluate/select/act/replan tick loop, plus its unit tests
-  (`#[cfg(test)] mod tests` at the bottom of the file). Also owns the ownership
-  constraint: `home: Option<House>`, granted via `claim_house`, gates Rest in `select`
+  `House`, `Career`, `ProductionAction`, `World`, `HUNGER_MAX`, `ENERGY_MAX`)
+- [src/agent.rs](src/agent.rs) — `Agent`, `Action` (including `Produce`), `Urgency`, and
+  the sense/evaluate/select/act/replan tick loop (`select` as an ordered rule list, see
+  roadmap step 8), plus its unit tests (`#[cfg(test)] mod tests` at the bottom of the
+  file). Also owns the ownership constraint: `home: Option<House>`, granted via
+  `claim_house`, gates Rest in `select`. `tick`/`act` return `Option<House>` — a produced
+  house that `Agent` hands to its caller rather than keeping for itself
 - [src/house.rs](src/house.rs) — `House`, the first world object an agent can own. Fields
   get added only when a milestone actually needs them (still empty)
 - [src/career.rs](src/career.rs) — `Career` (an agent's job) and `ProductionAction`
   (what a career unlocks). `Career::production_action()` is a pure query — not wired
   into the decision loop; `Agent` just carries a `career: Career` field
+- [src/world.rs](src/world.rs) — `World`: `Vec<Agent>` plus the shared pool of unclaimed
+  houses, and the tick loop that brokers contention over it (see roadmap step 7). The
+  only place multiple agents exist together so far — `main.rs` doesn't use `World` yet
 - [src/main.rs](src/main.rs) — macroquad UI only: reads `Agent` state each frame through
   its public accessors (`name()`, `hunger()`, `energy()`, `tick()`) and draws it. No
   decision logic lives here — `select`/`act`/`evaluate`/`replan` are private to
-  `agent.rs` on purpose, so the UI can't reach past the public API by accident.
+  `agent.rs` on purpose, so the UI can't reach past the public API by accident. Still
+  drives a single `Agent` directly, not a `World` — multi-agent isn't in the running demo
 
 As more need/world/agent types are added, keep following this pattern — one module per
 concern under `src/`, tests colocated with the code they cover — rather than growing any
@@ -101,11 +135,14 @@ one file indefinitely. Don't pre-create module structure ahead of the code that 
 
 ## Testing
 
-Unit tests live next to the logic they cover (currently just [src/agent.rs](src/agent.rs)),
-in a `#[cfg(test)] mod tests { use super::*; ... }` block, not a separate `tests/`
+Unit tests live next to the logic they cover ([src/agent.rs](src/agent.rs),
+[src/career.rs](src/career.rs), [src/world.rs](src/world.rs)), in a
+`#[cfg(test)] mod tests { use super::*; ... }` block, not a separate `tests/`
 directory — this lets tests reach private fields/methods directly (e.g. setting
-`agent.hunger` or calling `agent.select(...)` on a hand-built `Urgency`) instead of
-needing everything under test to be `pub`. Favor this style for new sim-logic tests too.
+`agent.hunger`, calling `agent.select(...)` on a hand-built `Urgency`, or seeding
+`world.available_houses` directly to test contention without depending on production
+timing) instead of needing everything under test to be `pub`. Favor this style for new
+sim-logic tests too.
 
 When adding a new need/action, test at minimum: decay applies correctly when idle, the
 action triggers exactly at its threshold, its effect clamps at the need's bounds, and —
