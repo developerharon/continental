@@ -49,11 +49,12 @@ pub struct Agent {
     name: &'static str,
     hunger: f32,
     energy: f32,
-    /// The house this agent owns. Every agent owns exactly one for now —
-    /// milestone 3 only models ownership, not scarcity or contention, so
-    /// there's no "no house" case yet and nothing yet checks this before
-    /// acting (see `house` module docs).
-    home: House,
+    /// The house this agent owns, if any. Agents start without one —
+    /// ownership has to be granted via `claim_house`, so there's a real
+    /// "doesn't own a house" state for the ownership constraint in
+    /// `select` to mean something, rather than every agent trivially
+    /// owning one from birth as milestone 3 had it.
+    home: Option<House>,
 }
 
 impl Agent {
@@ -62,7 +63,7 @@ impl Agent {
             name,
             hunger: 0.0,
             energy: ENERGY_MAX,
-            home: House::new(),
+            home: None,
         }
     }
 
@@ -78,8 +79,18 @@ impl Agent {
         self.energy
     }
 
-    pub fn home(&self) -> &House {
-        &self.home
+    pub fn home(&self) -> Option<&House> {
+        self.home.as_ref()
+    }
+
+    /// Grants this agent ownership of `house`. Direct, single-owner Rust
+    /// ownership — `house` moves onto this `Agent` as a plain field, no
+    /// `Rc`/`RefCell`. That's enough at today's one-agent, one-house scale;
+    /// milestone 7 (multiple agents contending over shared resources) is
+    /// where sharing a house safely actually has to be designed, not
+    /// pre-solved here.
+    pub fn claim_house(&mut self, house: House) {
+        self.home = Some(house);
     }
 
     /// sense: read current state — the raw hunger and energy values.
@@ -102,9 +113,15 @@ impl Agent {
     /// randomness. Equal urgency is a deliberate fixed tiebreak (hunger
     /// wins), not a coin flip, so the choice stays explainable from state
     /// alone.
+    ///
+    /// Ownership constraint: Rest is only ever a candidate if the agent
+    /// owns a house (`self.home.is_some()`) — an agent that hasn't claimed
+    /// one can be as exhausted as it likes and will never select Rest. This
+    /// is the only place that check happens; `act` doesn't re-check it
+    /// because `act` only ever receives what `select` already gated.
     fn select(&self, urgency: Urgency) -> Action {
         let hunger_due = urgency.hunger >= HUNGER_EAT_THRESHOLD;
-        let energy_due = urgency.energy >= ENERGY_REST_THRESHOLD;
+        let energy_due = urgency.energy >= ENERGY_REST_THRESHOLD && self.home.is_some();
 
         match (hunger_due, energy_due) {
             (false, false) => Action::Idle,
@@ -182,6 +199,7 @@ mod tests {
     #[test]
     fn rests_when_energy_crosses_threshold() {
         let mut agent = Agent::new("Test");
+        agent.claim_house(House::new());
         // Urgency threshold 70 => due once energy <= ENERGY_MAX - 70 = 30.
         agent.energy = ENERGY_MAX - ENERGY_REST_THRESHOLD;
         agent.tick();
@@ -207,7 +225,8 @@ mod tests {
 
     #[test]
     fn higher_urgency_wins_when_both_needs_are_due() {
-        let agent = Agent::new("Test");
+        let mut agent = Agent::new("Test");
+        agent.claim_house(House::new());
 
         let hunger_more_urgent = Urgency {
             hunger: 90.0,
@@ -224,7 +243,8 @@ mod tests {
 
     #[test]
     fn equal_urgency_breaks_the_tie_toward_hunger_deterministically() {
-        let agent = Agent::new("Test");
+        let mut agent = Agent::new("Test");
+        agent.claim_house(House::new()); // both needs due requires owning a house
         let tied = Urgency {
             hunger: 75.0,
             energy: 75.0,
@@ -238,5 +258,47 @@ mod tests {
         agent.hunger = HUNGER_MAX - 1.0;
         agent.replan();
         assert_eq!(agent.hunger, HUNGER_MAX);
+    }
+
+    #[test]
+    fn agents_start_without_a_house() {
+        let agent = Agent::new("Test");
+        assert!(agent.home().is_none());
+    }
+
+    #[test]
+    fn claiming_a_house_grants_ownership() {
+        let mut agent = Agent::new("Test");
+        agent.claim_house(House::new());
+        assert!(agent.home().is_some());
+    }
+
+    #[test]
+    fn resting_is_unavailable_without_a_house() {
+        let agent = Agent::new("Test"); // no house claimed
+        let urgency = Urgency {
+            hunger: 0.0,
+            energy: 90.0, // as urgent as it gets — would clearly pick Rest if it could
+        };
+        assert_eq!(agent.select(urgency), Action::Idle);
+    }
+
+    #[test]
+    fn resting_is_available_once_a_house_is_claimed() {
+        let mut agent = Agent::new("Test");
+        agent.claim_house(House::new());
+        let urgency = Urgency {
+            hunger: 0.0,
+            energy: 90.0,
+        };
+        assert_eq!(agent.select(urgency), Action::Rest);
+    }
+
+    #[test]
+    fn energy_keeps_draining_when_the_agent_has_no_house_to_rest_in() {
+        let mut agent = Agent::new("Test"); // no house claimed
+        agent.energy = 0.0; // already exhausted, and stuck that way
+        agent.tick();
+        assert_eq!(agent.energy, 0.0);
     }
 }

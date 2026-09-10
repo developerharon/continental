@@ -1,11 +1,12 @@
-//! Milestone 3 UI: a thin macroquad rendering pass over `continental::Agent`'s
+//! Milestone 3/4 UI: a thin macroquad rendering pass over `continental::Agent`'s
 //! tick loop. It reads `Agent` state each frame through its public accessors
-//! and draws it — it adds no decision logic of its own. The agent now sits on
-//! a 10x10 grid instead of a free pixel position, and a House placeholder
-//! exists on the grid too — with no movement, pathing, or ownership wired up
-//! yet, since that's milestone 4's job, not this rendering pass's.
+//! and draws it — it adds no decision logic of its own. The agent sits on a
+//! 10x10 grid instead of a free pixel position. The grid's House square is
+//! still just a static placeholder (milestone 3) — the ownership constraint
+//! milestone 4 actually added lives in `agent.rs`; this demo agent claims a
+//! *separate* House (unconnected to the grid square) so it can still rest.
 
-use continental::{Agent, ENERGY_MAX, HUNGER_MAX};
+use continental::{Agent, ENERGY_MAX, HUNGER_MAX, House};
 use macroquad::prelude::*;
 
 /// Seconds of real time between ticks, so needs visibly change over time
@@ -35,9 +36,10 @@ const GRID_Y: f32 = 20.0;
 /// The agent's fixed position on the grid. No movement yet — that's a
 /// later milestone — so this is just where it's drawn every frame.
 const AGENT_GRID_POS: (i32, i32) = (2, 3);
-/// Where the House placeholder sits. Not connected to `agent.home()` or
-/// any ownership logic — milestone 3 only puts a world object on the grid,
-/// milestone 4 is what wires ownership/interaction up.
+/// Where the House placeholder sits. Still just a static square on the
+/// grid, not connected to `agent.home()` or any ownership logic — wiring
+/// the grid itself up to ownership (e.g. recoloring this square once it's
+/// actually claimed) is future UI work, not part of this pass.
 const HOUSE_GRID_POS: (i32, i32) = (7, 6);
 
 fn window_conf() -> Conf {
@@ -52,6 +54,11 @@ fn window_conf() -> Conf {
 #[macroquad::main(window_conf)]
 async fn main() {
     let mut agent = Agent::new("Agent-0");
+    // Milestone 4 made owning a house a precondition for Rest, and agents
+    // now start without one. Grant this demo agent one up front so it can
+    // still rest, same as before — the grid's gray House square (below)
+    // isn't this one; it's still just an unconnected placeholder.
+    agent.claim_house(House::new());
     let mut tick_timer = 0.0;
     let mut eat_flash_timer = 0.0;
     let mut rest_flash_timer = 0.0;
@@ -136,9 +143,10 @@ fn draw_grid() {
 }
 
 /// Draws the House placeholder at `pos`: a gray square signaling "exists,
-/// unclaimed". Milestone 3 only puts a world object on the grid — it isn't
-/// connected to `agent.home()` or any ownership/interaction logic, and
-/// there's no "walk to house" here. That's milestone 4's job.
+/// unclaimed". Purely decorative — not connected to `agent.home()` or any
+/// ownership logic, and there's no "walk to house" here. `agent.rs` has the
+/// real ownership constraint now (milestone 4); wiring this square up to
+/// it is separate UI work, not done in this pass.
 fn draw_house(pos: (i32, i32)) {
     let (cx, cy) = grid_to_screen(pos);
     let size = CELL_SIZE - 8.0;
