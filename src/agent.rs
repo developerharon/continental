@@ -2,6 +2,12 @@
 //! sense -> evaluate -> select -> act -> replan. Needs are plain numbers
 //! that decay over time; priority between them is decided by comparing or
 //! scoring those numbers — never by randomness.
+//!
+//! `select` (milestone 8) picks the winning action via an ordered list of
+//! condition-action rules rather than a flat match — see its docs. `act`
+//! (milestone 6) can also produce a house, which it hands back to the
+//! caller instead of claiming for itself — see `World` (milestone 7) for
+//! why: sharing a house across multiple agents is brokered there, not here.
 
 use crate::{Career, House, ProductionAction};
 
@@ -29,10 +35,18 @@ const ENERGY_REST_RELIEF: f32 = 60.0;
 /// against the sim's own value instead of duplicating the number.
 pub const ENERGY_MAX: f32 = 100.0;
 
+/// How much a single Farm action adds to the agent's food stock. Arbitrary
+/// for now — nothing consumes food yet, so there's no balance to tune
+/// against. Food isn't clamped to a max: it's a stockpile, not a 0-100 need.
+const FOOD_PRODUCED_PER_TICK: f32 = 10.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
     Eat,
     Rest,
+    /// Do the job this agent's career allows, if any (see
+    /// `Agent::available_production_action`).
+    Produce(ProductionAction),
     Idle,
 }
 
@@ -55,13 +69,18 @@ pub struct Agent {
     /// `select` to mean something, rather than every agent trivially
     /// owning one from birth as milestone 3 had it.
     home: Option<House>,
-    /// The agent's job. Gates which production action is *available* — see
-    /// `Career`/`ProductionAction` docs. Not wired into `tick` yet; no
-    /// career currently changes agent behavior. That's milestone 6.
+    /// The agent's job. Gates which production action is available via
+    /// `available_production_action`, which `select` (milestone 6) uses
+    /// to fall back to work instead of Idle when neither need is due.
     career: Career,
+    /// Food stockpiled by Farm actions. Purely a stockpile so far —
+    /// nothing reads it back to satisfy hunger; that's not part of any
+    /// milestone yet.
+    food: f32,
 }
 
 impl Agent {
+    #[must_use]
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
@@ -69,53 +88,64 @@ impl Agent {
             energy: ENERGY_MAX,
             home: None,
             career: Career::default(),
+            food: 0.0,
         }
     }
 
-    pub fn name(&self) -> &str {
+    #[must_use]
+    pub const fn name(&self) -> &str {
         self.name
     }
 
-    pub fn hunger(&self) -> f32 {
+    #[must_use]
+    pub const fn hunger(&self) -> f32 {
         self.hunger
     }
 
-    pub fn energy(&self) -> f32 {
+    #[must_use]
+    pub const fn energy(&self) -> f32 {
         self.energy
     }
 
-    pub fn home(&self) -> Option<&House> {
+    #[must_use]
+    pub const fn food(&self) -> f32 {
+        self.food
+    }
+
+    #[must_use]
+    pub const fn home(&self) -> Option<&House> {
         self.home.as_ref()
     }
 
     /// Grants this agent ownership of `house`. Direct, single-owner Rust
     /// ownership — `house` moves onto this `Agent` as a plain field, no
-    /// `Rc`/`RefCell`. That's enough at today's one-agent, one-house scale;
-    /// milestone 7 (multiple agents contending over shared resources) is
-    /// where sharing a house safely actually has to be designed, not
-    /// pre-solved here.
-    pub fn claim_house(&mut self, house: House) {
+    /// `Rc`/`RefCell`. `World` (milestone 7) is what actually brokers
+    /// houses between multiple agents; `Agent` itself never needs to know
+    /// about any other agent to do that safely — it just accepts a house
+    /// it's handed, one owner at a time.
+    pub const fn claim_house(&mut self, house: House) {
         self.home = Some(house);
     }
 
-    pub fn career(&self) -> Career {
+    #[must_use]
+    pub const fn career(&self) -> Career {
         self.career
     }
 
-    pub fn set_career(&mut self, career: Career) {
+    pub const fn set_career(&mut self, career: Career) {
         self.career = career;
     }
 
     /// Which production action this agent's career currently gates access
-    /// to, if any. Purely a data-model query — nothing yet calls this from
-    /// `tick`, and there's no way to actually perform it. Milestone 6 is
-    /// what wires a production action into the decision loop.
+    /// to, if any. `select` uses this to fall back to work when neither
+    /// survival need is due.
+    #[must_use]
     pub fn available_production_action(&self) -> Option<ProductionAction> {
         self.career.production_action()
     }
 
     /// sense: read current state — the raw hunger and energy values.
-    fn sense(&self) -> (f32, f32) {
+    const fn sense(&self) -> (f32, f32) {
         (self.hunger, self.energy)
     }
 
@@ -128,42 +158,86 @@ impl Agent {
         }
     }
 
-    /// select: pick the winning action from evaluated urgency. When only one
-    /// need is past its threshold, that need wins outright. When both are,
-    /// the higher urgency score wins — a direct comparison, never
-    /// randomness. Equal urgency is a deliberate fixed tiebreak (hunger
-    /// wins), not a coin flip, so the choice stays explainable from state
-    /// alone.
+    /// select: pick the winning action via an ordered list of
+    /// condition-action rules — the first rule whose condition holds
+    /// fires, and later rules are never evaluated. This (milestone 8)
+    /// replaces the flat match earlier milestones used with something
+    /// closer to SOAR-style production rules: an explicit, inspectable,
+    /// in-order list instead of a bespoke priority formula. Still fully
+    /// deterministic — rule order is the only tiebreak, never randomness —
+    /// and behaviorally identical to what it replaced.
+    ///
+    /// This does *not* attempt the rest of what "SOAR-inspired" could
+    /// mean — a real working-memory fact store, impasses/subgoaling,
+    /// chunking. Those are a much bigger, speculative undertaking that
+    /// this milestone's one-line stretch-goal description doesn't justify
+    /// on its own; if actually wanted, that's worth discussing first
+    /// rather than backing into silently here.
     ///
     /// Ownership constraint: Rest is only ever a candidate if the agent
     /// owns a house (`self.home.is_some()`) — an agent that hasn't claimed
-    /// one can be as exhausted as it likes and will never select Rest. This
-    /// is the only place that check happens; `act` doesn't re-check it
-    /// because `act` only ever receives what `select` already gated.
+    /// one can be as exhausted as it likes and will never select Rest.
     fn select(&self, urgency: Urgency) -> Action {
-        let hunger_due = urgency.hunger >= HUNGER_EAT_THRESHOLD;
-        let energy_due = urgency.energy >= ENERGY_REST_THRESHOLD && self.home.is_some();
+        type Rule = fn(&Agent, &Urgency) -> Option<Action>;
 
-        match (hunger_due, energy_due) {
-            (false, false) => Action::Idle,
-            (true, false) => Action::Eat,
-            (false, true) => Action::Rest,
-            (true, true) => {
-                if urgency.hunger >= urgency.energy {
+        const RULES: &[Rule] = &[
+            // Both survival needs due at once: higher urgency wins, hunger
+            // on a tie — a direct comparison, never a coin flip.
+            |agent, u| {
+                (agent.hunger_due(u) && agent.energy_due(u)).then_some(if u.hunger >= u.energy {
                     Action::Eat
                 } else {
                     Action::Rest
-                }
-            }
-        }
+                })
+            },
+            // Hunger alone is due.
+            |agent, u| agent.hunger_due(u).then_some(Action::Eat),
+            // Energy alone is due, and there's a house to rest in.
+            |agent, u| agent.energy_due(u).then_some(Action::Rest),
+            // Neither survival need is pressing: do the job, if there is one.
+            |agent, _| agent.available_production_action().map(Action::Produce),
+        ];
+
+        RULES
+            .iter()
+            .find_map(|rule| rule(self, &urgency))
+            .unwrap_or(Action::Idle)
     }
 
-    /// act: apply the selected action's effect on state.
-    fn act(&mut self, action: Action) {
+    /// Whether hunger has crossed its threshold. Shared by more than one
+    /// rule in `select`, so the threshold check lives in exactly one place.
+    const fn hunger_due(&self, urgency: &Urgency) -> bool {
+        urgency.hunger >= HUNGER_EAT_THRESHOLD
+    }
+
+    /// Whether energy has crossed its threshold *and* the agent has a
+    /// house to rest in — see `select`'s ownership constraint docs. Shared
+    /// by more than one rule, so this (threshold + ownership together)
+    /// lives in exactly one place.
+    const fn energy_due(&self, urgency: &Urgency) -> bool {
+        urgency.energy >= ENERGY_REST_THRESHOLD && self.home.is_some()
+    }
+
+    /// act: apply the selected action's effect on this agent's own state,
+    /// and hand back anything it produced that isn't this agent's alone to
+    /// keep — currently just a built house. `act` never claims a produced
+    /// house for itself; the caller (e.g. `World`) decides where it goes.
+    fn act(&mut self, action: Action) -> Option<House> {
         match action {
-            Action::Eat => self.hunger = (self.hunger - HUNGER_EAT_RELIEF).max(0.0),
-            Action::Rest => self.energy = (self.energy + ENERGY_REST_RELIEF).min(ENERGY_MAX),
-            Action::Idle => {}
+            Action::Eat => {
+                self.hunger = (self.hunger - HUNGER_EAT_RELIEF).max(0.0);
+                None
+            }
+            Action::Rest => {
+                self.energy = (self.energy + ENERGY_REST_RELIEF).min(ENERGY_MAX);
+                None
+            }
+            Action::Produce(ProductionAction::Farm) => {
+                self.food += FOOD_PRODUCED_PER_TICK;
+                None
+            }
+            Action::Produce(ProductionAction::Build) => Some(House::new()),
+            Action::Idle => None,
         }
     }
 
@@ -174,16 +248,33 @@ impl Agent {
         self.energy = (self.energy - ENERGY_DECAY_PER_TICK).max(0.0);
     }
 
-    pub fn tick(&mut self) {
+    /// Runs one full sense -> evaluate -> select -> act -> replan cycle.
+    /// Returns a house if this tick's action produced one — `Agent` has no
+    /// way to know whether it needs one or another agent does, so it never
+    /// keeps it; the caller is responsible for placing it (see `World`).
+    /// `#[must_use]` here isn't about purity (this call is all side
+    /// effects) — it's a guard against silently losing a produced house if
+    /// a future caller forgets to check the return value.
+    #[must_use]
+    pub fn tick(&mut self) -> Option<House> {
         let (sensed_hunger, sensed_energy) = self.sense();
+        let food_before = self.food;
         let urgency = self.evaluate(sensed_hunger, sensed_energy);
         let action = self.select(urgency);
-        self.act(action);
+        let produced_house = self.act(action);
         println!(
-            "{}: hunger={:.1} energy={:.1} -> {:?} -> hunger={:.1} energy={:.1}",
-            self.name, sensed_hunger, sensed_energy, action, self.hunger, self.energy
+            "{}: hunger={:.1} energy={:.1} food={:.1} -> {:?} -> hunger={:.1} energy={:.1} food={:.1}",
+            self.name,
+            sensed_hunger,
+            sensed_energy,
+            food_before,
+            action,
+            self.hunger,
+            self.energy,
+            self.food
         );
         self.replan();
+        produced_house
     }
 }
 
@@ -194,7 +285,7 @@ mod tests {
     #[test]
     fn idle_tick_only_applies_decay() {
         let mut agent = Agent::new("Test");
-        agent.tick();
+        let _ = agent.tick();
         assert_eq!(agent.hunger, HUNGER_DECAY_PER_TICK);
         assert_eq!(agent.energy, ENERGY_MAX - ENERGY_DECAY_PER_TICK);
     }
@@ -203,7 +294,7 @@ mod tests {
     fn eats_when_hunger_crosses_threshold() {
         let mut agent = Agent::new("Test");
         agent.hunger = HUNGER_EAT_THRESHOLD;
-        agent.tick();
+        let _ = agent.tick();
         // Eat relieves hunger, then replan's decay still applies this tick.
         let expected = (HUNGER_EAT_THRESHOLD - HUNGER_EAT_RELIEF).max(0.0) + HUNGER_DECAY_PER_TICK;
         assert_eq!(agent.hunger, expected);
@@ -223,7 +314,7 @@ mod tests {
         agent.claim_house(House::new());
         // Urgency threshold 70 => due once energy <= ENERGY_MAX - 70 = 30.
         agent.energy = ENERGY_MAX - ENERGY_REST_THRESHOLD;
-        agent.tick();
+        let _ = agent.tick();
         let expected = (ENERGY_MAX - ENERGY_REST_THRESHOLD + ENERGY_REST_RELIEF).min(ENERGY_MAX)
             - ENERGY_DECAY_PER_TICK;
         assert_eq!(agent.energy, expected);
@@ -316,6 +407,14 @@ mod tests {
     }
 
     #[test]
+    fn energy_keeps_draining_when_the_agent_has_no_house_to_rest_in() {
+        let mut agent = Agent::new("Test"); // no house claimed
+        agent.energy = 0.0; // already exhausted, and stuck that way
+        let _ = agent.tick();
+        assert_eq!(agent.energy, 0.0);
+    }
+
+    #[test]
     fn agents_start_unemployed() {
         let agent = Agent::new("Test");
         assert_eq!(agent.career(), Career::Unemployed);
@@ -334,10 +433,36 @@ mod tests {
     }
 
     #[test]
-    fn energy_keeps_draining_when_the_agent_has_no_house_to_rest_in() {
-        let mut agent = Agent::new("Test"); // no house claimed
-        agent.energy = 0.0; // already exhausted, and stuck that way
-        agent.tick();
-        assert_eq!(agent.energy, 0.0);
+    fn produces_when_no_survival_need_is_due_and_a_career_is_set() {
+        let mut agent = Agent::new("Test");
+        agent.set_career(Career::Farmer);
+        let urgency = agent.evaluate(0.0, ENERGY_MAX); // neither need due
+        assert_eq!(
+            agent.select(urgency),
+            Action::Produce(ProductionAction::Farm)
+        );
+    }
+
+    #[test]
+    fn survival_needs_preempt_production() {
+        let mut agent = Agent::new("Test");
+        agent.set_career(Career::Farmer);
+        let urgency = agent.evaluate(HUNGER_EAT_THRESHOLD, ENERGY_MAX); // hunger due
+        assert_eq!(agent.select(urgency), Action::Eat);
+    }
+
+    #[test]
+    fn farming_increases_food_stock() {
+        let mut agent = Agent::new("Test");
+        agent.act(Action::Produce(ProductionAction::Farm));
+        assert_eq!(agent.food, FOOD_PRODUCED_PER_TICK);
+    }
+
+    #[test]
+    fn building_produces_a_house_without_claiming_it() {
+        let mut agent = Agent::new("Test");
+        let produced = agent.act(Action::Produce(ProductionAction::Build));
+        assert!(produced.is_some());
+        assert!(agent.home().is_none()); // act() never self-claims; World does
     }
 }

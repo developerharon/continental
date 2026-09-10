@@ -80,7 +80,14 @@ async fn main() {
             tick_timer -= TICK_INTERVAL_SECS;
             let hunger_before = agent.hunger();
             let energy_before = agent.energy();
-            agent.tick();
+            // This demo has no World to broker a produced house to whoever
+            // needs it (see world.rs) — with only one agent there's no one
+            // else it could go to, so it just claims its own output. Would
+            // silently vanish here without this if the demo agent's career
+            // were ever set to Builder.
+            if let Some(house) = agent.tick() {
+                agent.claim_house(house);
+            }
             // tick() doesn't report which Action it picked, so infer which
             // one ran from its one observable effect: Eat is the only thing
             // that can drop hunger, Rest the only thing that can raise
@@ -214,6 +221,7 @@ fn draw_agent(
 
 /// One need's display inputs, grouped to keep `draw_need_bar`'s parameter
 /// list from growing every time a need gains another displayed value.
+#[derive(Clone, Copy)]
 struct NeedBar<'a> {
     label: &'a str,
     /// The agent's real, unsmoothed value — shown as the numeric label.
