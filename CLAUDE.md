@@ -114,7 +114,10 @@ section needed in Cargo.toml, Cargo infers this from the two entry points existi
   roadmap step 8), plus its unit tests (`#[cfg(test)] mod tests` at the bottom of the
   file). Also owns the ownership constraint: `home: Option<House>`, granted via
   `claim_house`, gates Rest in `select`. `tick`/`act` return `Option<House>` — a produced
-  house that `Agent` hands to its caller rather than keeping for itself
+  house that `Agent` hands to its caller rather than keeping for itself. `tick` records
+  what it did to a capped `log: VecDeque<String>` (`LOG_CAPACITY`, oldest dropped first)
+  instead of printing — this crate does no I/O at all now; reading/displaying that log
+  (`Agent::log()`) is `main.rs`'s job, same as any other piece of `Agent` state
 - [src/house.rs](src/house.rs) — `House`, the first world object an agent can own. Fields
   get added only when a milestone actually needs them (still empty)
 - [src/career.rs](src/career.rs) — `Career` (an agent's job) and `ProductionAction`
@@ -127,7 +130,13 @@ section needed in Cargo.toml, Cargo infers this from the two entry points existi
   its public accessors (`name()`, `hunger()`, `energy()`, `tick()`) and draws it. No
   decision logic lives here — `select`/`act`/`evaluate`/`replan` are private to
   `agent.rs` on purpose, so the UI can't reach past the public API by accident. Still
-  drives a single `Agent` directly, not a `World` — multi-agent isn't in the running demo
+  drives a single `Agent` directly, not a `World` — multi-agent isn't in the running demo.
+  Grid objects are clickable (`hit_test` + `Selected`) and the right-side panel shows
+  whichever one is selected instead of always showing the one agent — `Selected` is a
+  plain two-variant enum for now (one agent, one house); once there's more than one of a
+  kind it'll need to carry an identifier instead of just a case. Selecting the agent also
+  shows its recent-activity log (`Agent::log()`) in the panel — the terminal itself only
+  prints one line at startup; there's no per-tick terminal output any more
 
 As more need/world/agent types are added, keep following this pattern — one module per
 concern under `src/`, tests colocated with the code they cover — rather than growing any

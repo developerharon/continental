@@ -8,8 +8,19 @@
 //! (milestone 6) can also produce a house, which it hands back to the
 //! caller instead of claiming for itself — see `World` (milestone 7) for
 //! why: sharing a house across multiple agents is brokered there, not here.
+//!
+//! `tick` records what it did to a bounded internal log (`Agent::log`)
+//! instead of printing it — this crate does no I/O of its own at all.
+//! Deciding whether/how to show that log (e.g. only for a selected agent)
+//! is a UI concern; `main.rs` reads it the same way it reads hunger/energy.
 
 use crate::{Career, House, ProductionAction};
+use std::collections::VecDeque;
+
+/// How many recent tick log lines an agent keeps. Bounded so a long-running
+/// simulation doesn't grow this without limit — old entries fall off as new
+/// ones arrive. A UI showing this log is free to display fewer than this.
+const LOG_CAPACITY: usize = 20;
 
 /// How much hunger accumulates per tick if the agent doesn't eat.
 const HUNGER_DECAY_PER_TICK: f32 = 5.0;
@@ -77,6 +88,9 @@ pub struct Agent {
     /// nothing reads it back to satisfy hunger; that's not part of any
     /// milestone yet.
     food: f32,
+    /// The last `LOG_CAPACITY` ticks' worth of "what state led to what
+    /// action" lines, oldest first. See `log` and `tick`.
+    log: VecDeque<String>,
 }
 
 impl Agent {
@@ -89,6 +103,7 @@ impl Agent {
             home: None,
             career: Career::default(),
             food: 0.0,
+            log: VecDeque::new(),
         }
     }
 
@@ -105,6 +120,15 @@ impl Agent {
     #[must_use]
     pub const fn energy(&self) -> f32 {
         self.energy
+    }
+
+    /// Recent tick history, oldest first — see `LOG_CAPACITY`. Each line is
+    /// the state that led to a decision and the decision itself, the same
+    /// information `tick` used to print directly; a caller (e.g. the UI)
+    /// decides whether/how much of it to show.
+    #[must_use]
+    pub fn log(&self) -> impl DoubleEndedIterator<Item = &str> {
+        self.log.iter().map(String::as_str)
     }
 
     #[must_use]
@@ -262,19 +286,21 @@ impl Agent {
         let urgency = self.evaluate(sensed_hunger, sensed_energy);
         let action = self.select(urgency);
         let produced_house = self.act(action);
-        println!(
-            "{}: hunger={:.1} energy={:.1} food={:.1} -> {:?} -> hunger={:.1} energy={:.1} food={:.1}",
-            self.name,
-            sensed_hunger,
-            sensed_energy,
-            food_before,
-            action,
-            self.hunger,
-            self.energy,
-            self.food
-        );
+        self.push_log(format!(
+            "{action:?} — H{sensed_hunger:.0} E{sensed_energy:.0} F{food_before:.0}"
+        ));
         self.replan();
         produced_house
+    }
+
+    /// Appends one line to `log`, dropping the oldest line first once
+    /// `LOG_CAPACITY` is reached — a ring buffer via `VecDeque`, so this
+    /// stays O(1) regardless of how long the simulation has been running.
+    fn push_log(&mut self, line: String) {
+        if self.log.len() >= LOG_CAPACITY {
+            self.log.pop_front();
+        }
+        self.log.push_back(line);
     }
 }
 
@@ -464,5 +490,28 @@ mod tests {
         let produced = agent.act(Action::Produce(ProductionAction::Build));
         assert!(produced.is_some());
         assert!(agent.home().is_none()); // act() never self-claims; World does
+    }
+
+    #[test]
+    fn new_agent_has_an_empty_log() {
+        let agent = Agent::new("Test");
+        assert_eq!(agent.log().count(), 0);
+    }
+
+    #[test]
+    fn tick_appends_one_line_to_the_log() {
+        let mut agent = Agent::new("Test");
+        let _ = agent.tick();
+        assert_eq!(agent.log().count(), 1);
+        assert!(agent.log().next().unwrap().contains("Idle"));
+    }
+
+    #[test]
+    fn log_never_grows_past_its_capacity() {
+        let mut agent = Agent::new("Test");
+        for _ in 0..(LOG_CAPACITY + 5) {
+            let _ = agent.tick();
+        }
+        assert_eq!(agent.log().count(), LOG_CAPACITY);
     }
 }
