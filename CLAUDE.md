@@ -18,11 +18,13 @@ later step seems easy or related.
 
 1. Single agent, single need (hunger), tick loop — **DONE**, see [src/agent.rs](src/agent.rs)
 2. Second need (energy) + priority comparison between needs — **DONE**, see [src/agent.rs](src/agent.rs)
-3. A world object (e.g. `House`) agents can own — **next up**
+3. A world object (e.g. `House`) agents can own — **DONE**, see [src/house.rs](src/house.rs).
+   Ownership only, so far — `home: House` lives directly on `Agent` as an owned field, and
+   nothing checks it before acting yet. That's step 4's job.
 4. Ownership constraint: an agent can only use a resource it owns (e.g. rest only works in
-   your own house). This step is deliberately where Rust ownership/borrowing is meant to
-   get interesting — don't paper over it with `Rc<RefCell<>>` shortcuts without flagging
-   the tradeoff explicitly and discussing it first.
+   your own house) — **next up**. This step is deliberately where Rust ownership/borrowing
+   is meant to get interesting — don't paper over it with `Rc<RefCell<>>` shortcuts without
+   flagging the tradeoff explicitly and discussing it first.
 5. Career/job as agent state (enum), gating which production action is available
 6. Production actions (farmer produces food, builder produces houses)
 7. Scale to multiple agents with real contention over shared resources
@@ -72,10 +74,13 @@ can depend on the sim logic via plain `use continental::...` — no `[lib]`/`[[b
 section needed in Cargo.toml, Cargo infers this from the two entry points existing.
 
 - [Cargo.toml](Cargo.toml) — package manifest, edition 2024; `macroquad` is the only dep
-- [src/lib.rs](src/lib.rs) — library root; re-exports the public sim API (`Agent`, `HUNGER_MAX`)
+- [src/lib.rs](src/lib.rs) — library root; re-exports the public sim API (`Agent`,
+  `House`, `HUNGER_MAX`, `ENERGY_MAX`)
 - [src/agent.rs](src/agent.rs) — `Agent`, `Action`, `Urgency`, and the
   sense/evaluate/select/act/replan tick loop, plus its unit tests
   (`#[cfg(test)] mod tests` at the bottom of the file)
+- [src/house.rs](src/house.rs) — `House`, the first world object an agent can own. Fields
+  get added only when a milestone actually needs them (still empty as of milestone 3)
 - [src/main.rs](src/main.rs) — macroquad UI only: reads `Agent` state each frame through
   its public accessors (`name()`, `hunger()`, `energy()`, `tick()`) and draws it. No
   decision logic lives here — `select`/`act`/`evaluate`/`replan` are private to

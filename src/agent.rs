@@ -3,6 +3,8 @@
 //! that decay over time; priority between them is decided by comparing or
 //! scoring those numbers — never by randomness.
 
+use crate::House;
+
 /// How much hunger accumulates per tick if the agent doesn't eat.
 const HUNGER_DECAY_PER_TICK: f32 = 5.0;
 /// Hunger level at or above which eating becomes the priority.
@@ -47,6 +49,11 @@ pub struct Agent {
     name: &'static str,
     hunger: f32,
     energy: f32,
+    /// The house this agent owns. Every agent owns exactly one for now —
+    /// milestone 3 only models ownership, not scarcity or contention, so
+    /// there's no "no house" case yet and nothing yet checks this before
+    /// acting (see `house` module docs).
+    home: House,
 }
 
 impl Agent {
@@ -55,6 +62,7 @@ impl Agent {
             name,
             hunger: 0.0,
             energy: ENERGY_MAX,
+            home: House::new(),
         }
     }
 
@@ -68,6 +76,10 @@ impl Agent {
 
     pub fn energy(&self) -> f32 {
         self.energy
+    }
+
+    pub fn home(&self) -> &House {
+        &self.home
     }
 
     /// sense: read current state — the raw hunger and energy values.

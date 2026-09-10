@@ -24,7 +24,7 @@ Built piece by piece, in order — each step compiles and runs before moving to 
 
 - [x] Single agent, single need (hunger), tick loop
 - [x] Second need (energy) + priority comparison between needs
-- [ ] A world object (e.g. `House`) agents can own
+- [x] A world object (e.g. `House`) agents can own
 - [ ] Ownership constraint: an agent can only use a resource it owns (e.g. rest only works
       in your own house) — deliberately leans into Rust ownership/borrowing rather than
       papering over it with `Rc<RefCell<>>` shortcuts
