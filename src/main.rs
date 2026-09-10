@@ -12,6 +12,14 @@
 //! when nothing is. With only one agent and one house today, `Selected` is
 //! a plain enum; once there's more than one of a kind (multiple agents via
 //! `World`, more world objects), it'll need to carry an identifier instead.
+//!
+//! The terminal only prints one line at startup — `Agent::tick` used to
+//! print every tick's reasoning directly, which drowned the terminal in
+//! output for a window meant to run indefinitely. That reasoning now lives
+//! in `Agent::log()` instead, and shows up here as the selected agent's
+//! recent-activity list in the details panel. Anything genuinely worth the
+//! terminal (an actual error) would still go there — there's just nothing
+//! that produces one today.
 
 use continental::{Agent, ENERGY_MAX, HUNGER_MAX, House};
 use macroquad::prelude::*;
@@ -39,6 +47,17 @@ const BAR_W: f32 = 260.0;
 const BAR_H: f32 = 22.0;
 const HUNGER_BAR_Y: f32 = 78.0;
 const ENERGY_BAR_Y: f32 = 168.0;
+
+/// Where the selected agent's recent-activity log starts, below the bars.
+const LOG_HEADER_Y: f32 = 232.0;
+const LOG_LINE_Y: f32 = 254.0;
+const LOG_LINE_HEIGHT: f32 = 18.0;
+const LOG_FONT_SIZE: f32 = 14.0;
+/// How many of the agent's most recent log lines to show at once. The
+/// agent itself remembers more than this (`LOG_CAPACITY` in agent.rs) —
+/// this is just how much fits in the panel, a display choice, not a
+/// storage limit.
+const LOG_LINES_SHOWN: usize = 6;
 
 /// Grid the agent and world objects sit on. Coordinates are (col, row),
 /// each in `0..GRID_COLS`/`0..GRID_ROWS`.
@@ -73,6 +92,8 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    println!("Continental is running. Close the window to quit.");
+
     let mut agent = Agent::new("Agent-0");
     // Milestone 4 made owning a house a precondition for Rest, and agents
     // now start without one. Grant this demo agent one up front so it can
@@ -307,6 +328,7 @@ fn draw_details_panel(
                 resting,
                 "RESTED!",
             );
+            draw_agent_log(agent);
         }
         Some(Selected::House) => {
             draw_text("House", BAR_X, HUNGER_BAR_Y - 12.0, 24.0, WHITE);
@@ -328,6 +350,18 @@ fn draw_details_panel(
                 GRAY,
             );
         }
+    }
+}
+
+/// Draws the selected agent's `LOG_LINES_SHOWN` most recent log lines
+/// (newest first), below its need bars. This is the replacement for the
+/// terminal spam `Agent::tick` used to produce directly — see module docs.
+fn draw_agent_log(agent: &Agent) {
+    draw_text("recent activity:", BAR_X, LOG_HEADER_Y, 18.0, GRAY);
+
+    for (i, line) in agent.log().rev().take(LOG_LINES_SHOWN).enumerate() {
+        let y = LOG_LINE_Y + i as f32 * LOG_LINE_HEIGHT;
+        draw_text(line, BAR_X, y, LOG_FONT_SIZE, LIGHTGRAY);
     }
 }
 
