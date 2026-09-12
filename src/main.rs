@@ -21,23 +21,41 @@
 //! which one (into `world.agents()`) instead of being a bare two-variant
 //! enum, same as the code previously flagged it would need to.
 //!
+//! Both demo agents now have careers (`Agent-0` farms, `Agent-1` builds),
+//! and each career has its own `Workplace` — a Farm tile, a construction
+//! site — positioned on the grid same as everything else. Produce is
+//! gated on location exactly like Eat/Rest, so a working day now visibly
+//! looks like work -> lunch at the restaurant -> back to work -> home to
+//! rest, without any of that being a scripted schedule: it's the same
+//! priority order (`select` in the sim crate) `select` already had, Eat
+//! and Rest just now have somewhere to interrupt Produce *at*. `Agent-1`
+//! is also given a faster hunger decay rate than `Agent-0`'s default, so
+//! it visibly eats roughly twice as often over the same run — a real
+//! per-agent difference in individual state, not randomness.
+//!
 //! Deliberately left alone here: houses sitting unclaimed in `World`'s
-//! pool aren't drawn — neither demo agent has a `Builder` career, so the
-//! pool never has anything in it. That's for whenever production gets
-//! wired into this same UI.
+//! pool still aren't drawn. `Agent-1` (the builder) already owns a house
+//! from the start, so it never claims what it builds — those houses just
+//! accumulate invisibly in the pool. The log panel still shows every
+//! Produce tick happening; giving unclaimed inventory its own visual
+//! representation is a separate follow-up, not part of this pass.
 
-use continental::{Agent, ENERGY_MAX, HUNGER_MAX, House, Restaurant, World};
+use continental::{
+    Agent, Career, ENERGY_MAX, HUNGER_MAX, House, ProductionAction, Restaurant, Workplace, World,
+};
 use macroquad::prelude::*;
 
 /// Something on the grid the player can click to see details about in the
-/// side panel. Carries the clicked object's index into `world.agents()` —
-/// a house is identified by the index of the agent that owns it, since
-/// there's exactly one house per agent and no unowned ones are drawn.
+/// side panel. Carries the clicked object's index into `world.agents()` /
+/// `world.workplaces()` — a house is identified by the index of the agent
+/// that owns it, since there's exactly one house per agent and no unowned
+/// ones are drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Selected {
     Agent(usize),
     House(usize),
     Restaurant,
+    Workplace(usize),
 }
 
 /// Per-agent display-only state the render loop tracks alongside `World`'s
@@ -90,17 +108,27 @@ const CELL_SIZE: f32 = 32.0;
 const GRID_X: f32 = 20.0;
 const GRID_Y: f32 = 20.0;
 
-/// Each agent's starting position, its own (distinct) house's position,
-/// and its name — paired up positionally, so `AGENT_START_POSITIONS[i]`
-/// is where `HOUSE_POSITIONS[i]`'s owner starts. Chosen far enough from
-/// both the restaurant and the agent's own house that a run visibly shows
-/// walking rather than starting already there.
+/// Each agent's starting position, career, and its own (distinct) house's
+/// and workplace's positions — all paired up positionally, so index `i`
+/// across every one of these arrays describes the same agent. `Agent-0`
+/// farms on the left column (`x = 1`), `Agent-1` builds on the right
+/// (`x = 8`); the shared restaurant sits on the same row as both
+/// workplaces (`y = 4`) so a lunch trip is a short, visible walk sideways
+/// from work rather than a detour. Every position is chosen far enough
+/// from the others that a run visibly shows walking rather than starting
+/// already there.
 const AGENT_NAMES: [&str; 2] = ["Agent-0", "Agent-1"];
+const AGENT_CAREERS: [Career; 2] = [Career::Farmer, Career::Builder];
 const AGENT_START_POSITIONS: [(i32, i32); 2] = [(1, 1), (8, 1)];
 const HOUSE_POSITIONS: [(i32, i32); 2] = [(1, 8), (8, 8)];
+const WORKPLACE_POSITIONS: [(i32, i32); 2] = [(1, 4), (8, 4)];
 /// Where the one shared `Restaurant` sits — reachable by every agent,
-/// regardless of who owns what house.
+/// regardless of who owns what house or works where.
 const RESTAURANT_POSITION: (i32, i32) = (4, 4);
+/// `Agent-1`'s hunger decay rate, roughly double `Agent-0`'s (left at the
+/// sim crate's ~5.0/tick default) — see module docs. A plain, individually
+/// explainable difference in state, not randomness.
+const FAST_HUNGER_DECAY_PER_TICK: f32 = 10.0;
 
 /// Radius an agent is drawn at and hit-tested against for clicks.
 const AGENT_RADIUS: f32 = 12.0;
@@ -126,10 +154,26 @@ async fn main() {
         .zip(AGENT_START_POSITIONS)
         .map(|(name, position)| Agent::new(name, position))
         .collect();
-    for (agent, house_position) in agents.iter_mut().zip(HOUSE_POSITIONS) {
+    for ((agent, house_position), career) in
+        agents.iter_mut().zip(HOUSE_POSITIONS).zip(AGENT_CAREERS)
+    {
         agent.claim_house(House::new(house_position));
+        agent.set_career(career);
     }
-    let mut world = World::new(agents, Restaurant::new(RESTAURANT_POSITION));
+    // Agent-1 eats noticeably more often than Agent-0 over the same run —
+    // see FAST_HUNGER_DECAY_PER_TICK's docs.
+    agents[1].set_hunger_decay_rate(FAST_HUNGER_DECAY_PER_TICK);
+
+    let workplaces: Vec<Workplace> = WORKPLACE_POSITIONS
+        .into_iter()
+        .zip(AGENT_CAREERS)
+        .filter_map(|(position, career)| {
+            career
+                .production_action()
+                .map(|action| Workplace::new(position, action))
+        })
+        .collect();
+    let mut world = World::new(agents, Restaurant::new(RESTAURANT_POSITION), workplaces);
 
     let mut visuals: Vec<AgentVisual> = world
         .agents()
@@ -233,6 +277,13 @@ fn hit_test(world: &World, (x, y): (f32, f32)) -> Option<Selected> {
         }
     }
 
+    for (i, workplace) in world.workplaces().iter().enumerate() {
+        let (wx, wy) = grid_to_screen(workplace.position());
+        if (x - wx).abs() <= half && (y - wy).abs() <= half {
+            return Some(Selected::Workplace(i));
+        }
+    }
+
     let (rest_x, rest_y) = grid_to_screen(world.restaurant().position());
     if (x - rest_x).abs() <= half && (y - rest_y).abs() <= half {
         return Some(Selected::Restaurant);
@@ -294,11 +345,29 @@ fn draw_square(pos: (i32, i32), color: Color, selected: bool) {
     }
 }
 
-/// Draws the grid, every house, the restaurant, every agent, and the
-/// right-side details panel. Read-only: takes `&World` and never mutates
-/// or advances simulation state. `selected` is whatever the player last
-/// clicked (see `Selected`, `hit_test`) — it decides what the details
-/// panel shows and which grid object (if any) gets a highlight ring.
+/// The color a `Workplace` is drawn in, distinct per `ProductionAction` (and
+/// from `House`'s gray, `Restaurant`'s orange, and the agent flash colors).
+fn workplace_color(action: ProductionAction) -> Color {
+    match action {
+        ProductionAction::Farm => GOLD,
+        ProductionAction::Build => BROWN,
+    }
+}
+
+/// The details-panel heading for a `Workplace`, per `ProductionAction`.
+fn workplace_label(action: ProductionAction) -> &'static str {
+    match action {
+        ProductionAction::Farm => "Farm",
+        ProductionAction::Build => "Construction Site",
+    }
+}
+
+/// Draws the grid, every house, every workplace, the restaurant, every
+/// agent, and the right-side details panel. Read-only: takes `&World` and
+/// never mutates or advances simulation state. `selected` is whatever the
+/// player last clicked (see `Selected`, `hit_test`) — it decides what the
+/// details panel shows and which grid object (if any) gets a highlight
+/// ring.
 fn draw_scene(world: &World, visuals: &[AgentVisual], selected: Option<Selected>) {
     clear_background(Color::from_rgba(24, 24, 28, 255));
 
@@ -308,6 +377,13 @@ fn draw_scene(world: &World, visuals: &[AgentVisual], selected: Option<Selected>
         if let Some(house) = agent.home() {
             draw_square(house.position(), GRAY, selected == Some(Selected::House(i)));
         }
+    }
+    for (i, workplace) in world.workplaces().iter().enumerate() {
+        draw_square(
+            workplace.position(),
+            workplace_color(workplace.action()),
+            selected == Some(Selected::Workplace(i)),
+        );
     }
     draw_square(
         world.restaurant().position(),
@@ -397,6 +473,23 @@ fn draw_details_panel(world: &World, visuals: &[AgentVisual], selected: Option<S
                 GRAY,
             );
         }
+        Some(Selected::Workplace(i)) => {
+            let workplace = &world.workplaces()[i];
+            draw_text(
+                workplace_label(workplace.action()),
+                BAR_X,
+                HUNGER_BAR_Y - 12.0,
+                24.0,
+                WHITE,
+            );
+            draw_text(
+                format!("status: shared, at {:?}", workplace.position()),
+                BAR_X,
+                HUNGER_BAR_Y + 20.0,
+                20.0,
+                GRAY,
+            );
+        }
         None => {
             draw_text(
                 "Click an agent, house,",
@@ -405,7 +498,13 @@ fn draw_details_panel(world: &World, visuals: &[AgentVisual], selected: Option<S
                 20.0,
                 GRAY,
             );
-            draw_text("or the restaurant.", BAR_X, HUNGER_BAR_Y + 14.0, 20.0, GRAY);
+            draw_text(
+                "restaurant, or workplace.",
+                BAR_X,
+                HUNGER_BAR_Y + 14.0,
+                20.0,
+                GRAY,
+            );
         }
     }
 }
