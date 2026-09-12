@@ -9,22 +9,37 @@
 //! surface — sharing a house safely once there's more than one agent and
 //! more than one house — shows up honestly there instead of being
 //! pre-solved here with structure it doesn't need yet.
+//!
+//! `position` was added once movement made "where" meaningful: Rest now
+//! requires the agent to actually be at its own house's position (see
+//! `Agent::required_location`), not just to own a house. A built house is
+//! positioned wherever its builder stood at the time (see `Agent::act`).
 
-/// A world object an agent can own. No fields yet — nothing reads any
-/// property of a house yet, so there's nothing to add until a later
-/// milestone actually needs it (e.g. capacity, or which agent owns it once
-/// houses can be shared/contested).
-pub struct House;
+/// A world object an agent can own, and a place on the grid Rest requires
+/// the owning agent to actually be at.
+pub struct House {
+    position: (i32, i32),
+}
 
 impl House {
     #[must_use]
-    pub const fn new() -> Self {
-        Self
+    pub const fn new(position: (i32, i32)) -> Self {
+        Self { position }
+    }
+
+    #[must_use]
+    pub const fn position(&self) -> (i32, i32) {
+        self.position
     }
 }
 
-impl Default for House {
-    fn default() -> Self {
-        Self::new()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn house_reports_the_position_it_was_built_at() {
+        let house = House::new((3, 5));
+        assert_eq!(house.position(), (3, 5));
     }
 }
