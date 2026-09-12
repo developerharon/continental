@@ -7,10 +7,12 @@ mod agent;
 mod career;
 mod house;
 mod restaurant;
+mod workplace;
 mod world;
 
 pub use agent::{Agent, ENERGY_MAX, HUNGER_MAX};
 pub use career::{Career, ProductionAction};
 pub use house::House;
 pub use restaurant::Restaurant;
+pub use workplace::Workplace;
 pub use world::World;

@@ -14,9 +14,11 @@
 //!
 //! `World` also holds the one `Restaurant` — unlike a `House`, it's never
 //! claimed or moved, just a shared position every agent senses each tick
-//! (see `Agent::tick`) so Eat knows where to walk to.
+//! (see `Agent::tick`) so Eat knows where to walk to — and every
+//! `Workplace`, one per `ProductionAction`, looked up per agent by its own
+//! career so Produce knows where to walk to as well.
 
-use crate::{Agent, House, Restaurant};
+use crate::{Agent, House, Restaurant, Workplace};
 
 pub struct World {
     agents: Vec<Agent>,
@@ -29,15 +31,26 @@ pub struct World {
     /// for shared eating, not multiple restaurants; a `Vec<Restaurant>` is
     /// a small, separate extension if that's ever wanted.
     restaurant: Restaurant,
+    /// Where each `ProductionAction` happens — a Farm tile, a construction
+    /// site, and so on. A `Vec` rather than one named field per career so
+    /// `World` doesn't need new fields or new `tick` logic if a third
+    /// production action ever exists; `tick` just looks up whichever one
+    /// matches each agent's own career.
+    workplaces: Vec<Workplace>,
 }
 
 impl World {
     #[must_use]
-    pub const fn new(agents: Vec<Agent>, restaurant: Restaurant) -> Self {
+    pub const fn new(
+        agents: Vec<Agent>,
+        restaurant: Restaurant,
+        workplaces: Vec<Workplace>,
+    ) -> Self {
         Self {
             agents,
             available_houses: Vec::new(),
             restaurant,
+            workplaces,
         }
     }
 
@@ -49,6 +62,11 @@ impl World {
     #[must_use]
     pub const fn restaurant(&self) -> &Restaurant {
         &self.restaurant
+    }
+
+    #[must_use]
+    pub fn workplaces(&self) -> &[Workplace] {
+        &self.workplaces
     }
 
     /// Advances every agent by one tick, in a fixed order (index 0 first,
@@ -67,7 +85,16 @@ impl World {
             {
                 agent.claim_house(house);
             }
-            if let Some(house) = agent.tick(self.restaurant.position()) {
+            // Each agent gets the position of whichever Workplace matches
+            // its own production action, if any — `None` if it has no
+            // career, or if nothing in `workplaces` offers what its career
+            // unlocks (see `Agent::required_location`'s fallback).
+            let workplace_position = self
+                .workplaces
+                .iter()
+                .find(|workplace| agent.available_production_action() == Some(workplace.action()))
+                .map(Workplace::position);
+            if let Some(house) = agent.tick(self.restaurant.position(), workplace_position) {
                 self.available_houses.push(house);
             }
         }
@@ -77,7 +104,7 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Career;
+    use crate::{Career, ProductionAction};
 
     /// Arbitrary shared restaurant position for tests that don't care
     /// where it is.
@@ -94,6 +121,7 @@ mod tests {
         let mut world = World::new(
             vec![houseless_builder("Builder")],
             Restaurant::new(RESTAURANT_POS),
+            vec![Workplace::new(RESTAURANT_POS, ProductionAction::Build)],
         );
         world.tick(); // neither need is due yet, so this tick: Produce(Build)
         assert_eq!(world.available_houses.len(), 1);
@@ -105,6 +133,7 @@ mod tests {
         let mut world = World::new(
             vec![houseless_builder("Builder")],
             Restaurant::new(RESTAURANT_POS),
+            vec![Workplace::new(RESTAURANT_POS, ProductionAction::Build)],
         );
         world.tick(); // builds a house, deposited into the pool
         world.tick(); // this tick: claims from the pool before acting
@@ -119,6 +148,7 @@ mod tests {
                 Agent::new("B", RESTAURANT_POS),
             ],
             Restaurant::new(RESTAURANT_POS),
+            vec![],
         );
         world.available_houses.push(House::new(RESTAURANT_POS));
         world.tick();
@@ -130,9 +160,34 @@ mod tests {
     fn an_agent_that_already_owns_a_house_does_not_take_from_the_pool() {
         let mut agent = Agent::new("A", RESTAURANT_POS);
         agent.claim_house(House::new(RESTAURANT_POS));
-        let mut world = World::new(vec![agent], Restaurant::new(RESTAURANT_POS));
+        let mut world = World::new(vec![agent], Restaurant::new(RESTAURANT_POS), vec![]);
         world.available_houses.push(House::new(RESTAURANT_POS));
         world.tick();
         assert_eq!(world.available_houses.len(), 1); // untouched
+    }
+
+    #[test]
+    fn world_gives_each_agent_the_workplace_matching_its_own_career() {
+        let mut farmer = Agent::new("Farmer", (0, 0));
+        farmer.set_career(Career::Farmer);
+        let mut builder = Agent::new("Builder", (0, 0));
+        builder.set_career(Career::Builder);
+
+        // Placed on different axes so each agent's very first step reveals
+        // which workplace it's actually heading toward.
+        let farm_position = (0, 5);
+        let construction_position = (5, 0);
+        let mut world = World::new(
+            vec![farmer, builder],
+            Restaurant::new(RESTAURANT_POS),
+            vec![
+                Workplace::new(farm_position, ProductionAction::Farm),
+                Workplace::new(construction_position, ProductionAction::Build),
+            ],
+        );
+
+        world.tick(); // neither survival need is due yet: both walk to work
+        assert_eq!(world.agents()[0].position(), (0, 1)); // farmer, toward the farm
+        assert_eq!(world.agents()[1].position(), (1, 0)); // builder, toward the construction site
     }
 }
