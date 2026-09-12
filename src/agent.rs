@@ -13,6 +13,18 @@
 //! instead of printing it — this crate does no I/O of its own at all.
 //! Deciding whether/how to show that log (e.g. only for a selected agent)
 //! is a UI concern; `main.rs` reads it the same way it reads hunger/energy.
+//!
+//! Grid movement: `select` still only ever decides *which* need wins —
+//! location never enters into that comparison. What location changes is
+//! whether the winning action can actually execute this tick: `tick` checks
+//! `required_location` for the selected action (a `Restaurant`'s position
+//! for Eat, the agent's own `House`'s position for Rest, no location for
+//! Produce/Idle) and, if the agent isn't there yet, moves one cell toward
+//! it via `move_toward` instead of running `act` — the action fires on
+//! whichever later tick the agent actually arrives. Because `select` reruns
+//! fresh every tick, an agent mid-walk to one need will happily redirect
+//! toward a different, now more urgent one — the same "no stale plans"
+//! principle `replan` already existed for, not a special case bolted on.
 
 use crate::{Career, House, ProductionAction};
 use std::collections::VecDeque;
@@ -74,6 +86,10 @@ pub struct Agent {
     name: &'static str,
     hunger: f32,
     energy: f32,
+    /// Current grid position. Moves at most one cell per tick, toward
+    /// whatever `required_location` returns for the selected action — see
+    /// module docs and `move_toward`.
+    position: (i32, i32),
     /// The house this agent owns, if any. Agents start without one —
     /// ownership has to be granted via `claim_house`, so there's a real
     /// "doesn't own a house" state for the ownership constraint in
@@ -95,11 +111,12 @@ pub struct Agent {
 
 impl Agent {
     #[must_use]
-    pub fn new(name: &'static str) -> Self {
+    pub fn new(name: &'static str, position: (i32, i32)) -> Self {
         Self {
             name,
             hunger: 0.0,
             energy: ENERGY_MAX,
+            position,
             home: None,
             career: Career::default(),
             food: 0.0,
@@ -120,6 +137,11 @@ impl Agent {
     #[must_use]
     pub const fn energy(&self) -> f32 {
         self.energy
+    }
+
+    #[must_use]
+    pub const fn position(&self) -> (i32, i32) {
+        self.position
     }
 
     /// Recent tick history, oldest first — see `LOG_CAPACITY`. Each line is
@@ -201,6 +223,10 @@ impl Agent {
     /// Ownership constraint: Rest is only ever a candidate if the agent
     /// owns a house (`self.home.is_some()`) — an agent that hasn't claimed
     /// one can be as exhausted as it likes and will never select Rest.
+    /// Note: `select` never looks at `position` — it decides *which* need
+    /// wins on urgency (and ownership) alone. Whether the winning action
+    /// can fire this tick or the agent has to walk toward it first is
+    /// `tick`'s job, via `required_location` — see module docs.
     fn select(&self, urgency: Urgency) -> Action {
         type Rule = fn(&Agent, &Urgency) -> Option<Action>;
 
@@ -242,10 +268,43 @@ impl Agent {
         urgency.energy >= ENERGY_REST_THRESHOLD && self.home.is_some()
     }
 
+    /// Where `action` requires this agent to physically be before it can
+    /// execute, if anywhere: Eat needs the shared restaurant's position,
+    /// Rest needs the agent's *own* house's position (never just any
+    /// house — `select` already guarantees `self.home` is `Some` whenever
+    /// it picks Rest), Produce and Idle have no location requirement and
+    /// always fire in place, same as before movement existed.
+    fn required_location(
+        &self,
+        action: Action,
+        restaurant_position: (i32, i32),
+    ) -> Option<(i32, i32)> {
+        match action {
+            Action::Eat => Some(restaurant_position),
+            Action::Rest => self.home.as_ref().map(House::position),
+            Action::Produce(_) | Action::Idle => None,
+        }
+    }
+
+    /// Moves this agent at most one grid cell toward `target`: each axis
+    /// steps independently by `-1`, `0`, or `1` (`i32::signum` of the
+    /// remaining distance on that axis), so a diagonal step is taken when
+    /// both axes still differ — travel takes `max(|dx|, |dy|)` ticks, never
+    /// more than one cell per tick, and does nothing once `position ==
+    /// target`.
+    fn move_toward(&mut self, target: (i32, i32)) {
+        let (x, y) = self.position;
+        let (tx, ty) = target;
+        self.position = (x + (tx - x).signum(), y + (ty - y).signum());
+    }
+
     /// act: apply the selected action's effect on this agent's own state,
     /// and hand back anything it produced that isn't this agent's alone to
     /// keep — currently just a built house. `act` never claims a produced
     /// house for itself; the caller (e.g. `World`) decides where it goes.
+    /// `act` has no notion of location at all — by the time it's called,
+    /// `tick` has already confirmed the agent is wherever the action
+    /// requires (or that it requires nowhere in particular).
     fn act(&mut self, action: Action) -> Option<House> {
         match action {
             Action::Eat => {
@@ -260,7 +319,9 @@ impl Agent {
                 self.food += FOOD_PRODUCED_PER_TICK;
                 None
             }
-            Action::Produce(ProductionAction::Build) => Some(House::new()),
+            // Built where the builder is currently standing — the one
+            // place a house's position has to come from.
+            Action::Produce(ProductionAction::Build) => Some(House::new(self.position)),
             Action::Idle => None,
         }
     }
@@ -273,6 +334,13 @@ impl Agent {
     }
 
     /// Runs one full sense -> evaluate -> select -> act -> replan cycle.
+    /// `restaurant_position` is sensed world state, the same way hunger and
+    /// energy are sensed agent state — see module docs. If the selected
+    /// action requires being somewhere this agent isn't yet
+    /// (`required_location`), this tick moves one cell closer instead of
+    /// running the action; `act` only ever runs once the agent is already
+    /// there (or the action needs nowhere in particular).
+    ///
     /// Returns a house if this tick's action produced one — `Agent` has no
     /// way to know whether it needs one or another agent does, so it never
     /// keeps it; the caller is responsible for placing it (see `World`).
@@ -280,19 +348,28 @@ impl Agent {
     /// effects) — it's a guard against silently losing a produced house if
     /// a future caller forgets to check the return value.
     #[must_use]
-    pub fn tick(&mut self) -> Option<House> {
+    pub fn tick(&mut self, restaurant_position: (i32, i32)) -> Option<House> {
         let (sensed_hunger, sensed_energy) = self.sense();
         let food_before = self.food;
         let urgency = self.evaluate(sensed_hunger, sensed_energy);
         let action = self.select(urgency);
-        let produced_house = self.act(action);
+
+        let (produced_house, walking) = match self.required_location(action, restaurant_position) {
+            Some(target) if target != self.position => {
+                self.move_toward(target);
+                (None, true)
+            }
+            _ => (self.act(action), false),
+        };
+
         // Plain ASCII "->" rather than an em dash: macroquad's default font
         // doesn't have that glyph and renders it as a tofu box (visible in
         // the UI's log panel) instead of failing loudly, so this is the
         // kind of thing that's easy to miss without actually looking at it
         // rendered.
+        let suffix = if walking { " (walking)" } else { "" };
         self.push_log(format!(
-            "{action:?} -> H{sensed_hunger:.0} E{sensed_energy:.0} F{food_before:.0}"
+            "{action:?}{suffix} -> H{sensed_hunger:.0} E{sensed_energy:.0} F{food_before:.0}"
         ));
         self.replan();
         produced_house
@@ -313,19 +390,25 @@ impl Agent {
 mod tests {
     use super::*;
 
+    /// Arbitrary shared starting point for tests that don't care about
+    /// position at all.
+    const ORIGIN: (i32, i32) = (0, 0);
+
     #[test]
     fn idle_tick_only_applies_decay() {
-        let mut agent = Agent::new("Test");
-        let _ = agent.tick();
+        let mut agent = Agent::new("Test", ORIGIN);
+        let _ = agent.tick(ORIGIN);
         assert_eq!(agent.hunger, HUNGER_DECAY_PER_TICK);
         assert_eq!(agent.energy, ENERGY_MAX - ENERGY_DECAY_PER_TICK);
     }
 
     #[test]
     fn eats_when_hunger_crosses_threshold() {
-        let mut agent = Agent::new("Test");
+        let mut agent = Agent::new("Test", ORIGIN);
         agent.hunger = HUNGER_EAT_THRESHOLD;
-        let _ = agent.tick();
+        // Already at the restaurant, so Eat fires this tick instead of
+        // walking toward it first.
+        let _ = agent.tick(ORIGIN);
         // Eat relieves hunger, then replan's decay still applies this tick.
         let expected = (HUNGER_EAT_THRESHOLD - HUNGER_EAT_RELIEF).max(0.0) + HUNGER_DECAY_PER_TICK;
         assert_eq!(agent.hunger, expected);
@@ -333,7 +416,7 @@ mod tests {
 
     #[test]
     fn eating_never_drops_hunger_below_zero() {
-        let mut agent = Agent::new("Test");
+        let mut agent = Agent::new("Test", ORIGIN);
         agent.hunger = HUNGER_EAT_RELIEF - 1.0; // less than a single Eat's relief
         agent.act(Action::Eat);
         assert_eq!(agent.hunger, 0.0);
@@ -341,11 +424,11 @@ mod tests {
 
     #[test]
     fn rests_when_energy_crosses_threshold() {
-        let mut agent = Agent::new("Test");
-        agent.claim_house(House::new());
+        let mut agent = Agent::new("Test", ORIGIN);
+        agent.claim_house(House::new(ORIGIN)); // house is where the agent stands
         // Urgency threshold 70 => due once energy <= ENERGY_MAX - 70 = 30.
         agent.energy = ENERGY_MAX - ENERGY_REST_THRESHOLD;
-        let _ = agent.tick();
+        let _ = agent.tick(ORIGIN);
         let expected = (ENERGY_MAX - ENERGY_REST_THRESHOLD + ENERGY_REST_RELIEF).min(ENERGY_MAX)
             - ENERGY_DECAY_PER_TICK;
         assert_eq!(agent.energy, expected);
@@ -353,7 +436,7 @@ mod tests {
 
     #[test]
     fn resting_never_exceeds_energy_max() {
-        let mut agent = Agent::new("Test");
+        let mut agent = Agent::new("Test", ORIGIN);
         agent.energy = ENERGY_MAX; // already full
         agent.act(Action::Rest);
         assert_eq!(agent.energy, ENERGY_MAX);
@@ -361,15 +444,15 @@ mod tests {
 
     #[test]
     fn idle_when_neither_need_is_due() {
-        let agent = Agent::new("Test");
+        let agent = Agent::new("Test", ORIGIN);
         let urgency = agent.evaluate(HUNGER_EAT_THRESHOLD - 1.0, ENERGY_MAX);
         assert_eq!(agent.select(urgency), Action::Idle);
     }
 
     #[test]
     fn higher_urgency_wins_when_both_needs_are_due() {
-        let mut agent = Agent::new("Test");
-        agent.claim_house(House::new());
+        let mut agent = Agent::new("Test", ORIGIN);
+        agent.claim_house(House::new(ORIGIN));
 
         let hunger_more_urgent = Urgency {
             hunger: 90.0,
@@ -386,8 +469,8 @@ mod tests {
 
     #[test]
     fn equal_urgency_breaks_the_tie_toward_hunger_deterministically() {
-        let mut agent = Agent::new("Test");
-        agent.claim_house(House::new()); // both needs due requires owning a house
+        let mut agent = Agent::new("Test", ORIGIN);
+        agent.claim_house(House::new(ORIGIN)); // both needs due requires owning a house
         let tied = Urgency {
             hunger: 75.0,
             energy: 75.0,
@@ -397,7 +480,7 @@ mod tests {
 
     #[test]
     fn hunger_never_exceeds_max_even_without_eating() {
-        let mut agent = Agent::new("Test");
+        let mut agent = Agent::new("Test", ORIGIN);
         agent.hunger = HUNGER_MAX - 1.0;
         agent.replan();
         assert_eq!(agent.hunger, HUNGER_MAX);
@@ -405,20 +488,20 @@ mod tests {
 
     #[test]
     fn agents_start_without_a_house() {
-        let agent = Agent::new("Test");
+        let agent = Agent::new("Test", ORIGIN);
         assert!(agent.home().is_none());
     }
 
     #[test]
     fn claiming_a_house_grants_ownership() {
-        let mut agent = Agent::new("Test");
-        agent.claim_house(House::new());
+        let mut agent = Agent::new("Test", ORIGIN);
+        agent.claim_house(House::new(ORIGIN));
         assert!(agent.home().is_some());
     }
 
     #[test]
     fn resting_is_unavailable_without_a_house() {
-        let agent = Agent::new("Test"); // no house claimed
+        let agent = Agent::new("Test", ORIGIN); // no house claimed
         let urgency = Urgency {
             hunger: 0.0,
             energy: 90.0, // as urgent as it gets — would clearly pick Rest if it could
@@ -428,8 +511,8 @@ mod tests {
 
     #[test]
     fn resting_is_available_once_a_house_is_claimed() {
-        let mut agent = Agent::new("Test");
-        agent.claim_house(House::new());
+        let mut agent = Agent::new("Test", ORIGIN);
+        agent.claim_house(House::new(ORIGIN));
         let urgency = Urgency {
             hunger: 0.0,
             energy: 90.0,
@@ -439,22 +522,22 @@ mod tests {
 
     #[test]
     fn energy_keeps_draining_when_the_agent_has_no_house_to_rest_in() {
-        let mut agent = Agent::new("Test"); // no house claimed
+        let mut agent = Agent::new("Test", ORIGIN); // no house claimed
         agent.energy = 0.0; // already exhausted, and stuck that way
-        let _ = agent.tick();
+        let _ = agent.tick(ORIGIN);
         assert_eq!(agent.energy, 0.0);
     }
 
     #[test]
     fn agents_start_unemployed() {
-        let agent = Agent::new("Test");
+        let agent = Agent::new("Test", ORIGIN);
         assert_eq!(agent.career(), Career::Unemployed);
         assert_eq!(agent.available_production_action(), None);
     }
 
     #[test]
     fn set_career_changes_the_available_production_action() {
-        let mut agent = Agent::new("Test");
+        let mut agent = Agent::new("Test", ORIGIN);
         agent.set_career(Career::Farmer);
         assert_eq!(agent.career(), Career::Farmer);
         assert_eq!(
@@ -465,7 +548,7 @@ mod tests {
 
     #[test]
     fn produces_when_no_survival_need_is_due_and_a_career_is_set() {
-        let mut agent = Agent::new("Test");
+        let mut agent = Agent::new("Test", ORIGIN);
         agent.set_career(Career::Farmer);
         let urgency = agent.evaluate(0.0, ENERGY_MAX); // neither need due
         assert_eq!(
@@ -476,7 +559,7 @@ mod tests {
 
     #[test]
     fn survival_needs_preempt_production() {
-        let mut agent = Agent::new("Test");
+        let mut agent = Agent::new("Test", ORIGIN);
         agent.set_career(Career::Farmer);
         let urgency = agent.evaluate(HUNGER_EAT_THRESHOLD, ENERGY_MAX); // hunger due
         assert_eq!(agent.select(urgency), Action::Eat);
@@ -484,39 +567,98 @@ mod tests {
 
     #[test]
     fn farming_increases_food_stock() {
-        let mut agent = Agent::new("Test");
+        let mut agent = Agent::new("Test", ORIGIN);
         agent.act(Action::Produce(ProductionAction::Farm));
         assert_eq!(agent.food, FOOD_PRODUCED_PER_TICK);
     }
 
     #[test]
     fn building_produces_a_house_without_claiming_it() {
-        let mut agent = Agent::new("Test");
+        let mut agent = Agent::new("Test", ORIGIN);
         let produced = agent.act(Action::Produce(ProductionAction::Build));
         assert!(produced.is_some());
         assert!(agent.home().is_none()); // act() never self-claims; World does
     }
 
     #[test]
+    fn building_places_the_house_at_the_builders_current_position() {
+        let mut agent = Agent::new("Test", (3, 4));
+        let produced = agent.act(Action::Produce(ProductionAction::Build));
+        assert_eq!(produced.unwrap().position(), (3, 4));
+    }
+
+    #[test]
     fn new_agent_has_an_empty_log() {
-        let agent = Agent::new("Test");
+        let agent = Agent::new("Test", ORIGIN);
         assert_eq!(agent.log().count(), 0);
     }
 
     #[test]
     fn tick_appends_one_line_to_the_log() {
-        let mut agent = Agent::new("Test");
-        let _ = agent.tick();
+        let mut agent = Agent::new("Test", ORIGIN);
+        let _ = agent.tick(ORIGIN);
         assert_eq!(agent.log().count(), 1);
         assert!(agent.log().next().unwrap().contains("Idle"));
     }
 
     #[test]
     fn log_never_grows_past_its_capacity() {
-        let mut agent = Agent::new("Test");
+        let mut agent = Agent::new("Test", ORIGIN);
         for _ in 0..(LOG_CAPACITY + 5) {
-            let _ = agent.tick();
+            let _ = agent.tick(ORIGIN);
         }
         assert_eq!(agent.log().count(), LOG_CAPACITY);
+    }
+
+    #[test]
+    fn move_toward_never_overshoots_the_target_in_one_tick() {
+        let mut agent = Agent::new("Test", (0, 0));
+        agent.move_toward((5, 1));
+        // One cell per tick on each axis — never a teleport straight to it.
+        assert_eq!(agent.position(), (1, 1));
+    }
+
+    #[test]
+    fn move_toward_does_nothing_once_already_at_the_target() {
+        let mut agent = Agent::new("Test", (2, 2));
+        agent.move_toward((2, 2));
+        assert_eq!(agent.position(), (2, 2));
+    }
+
+    #[test]
+    fn agent_walks_toward_the_restaurant_instead_of_eating_when_not_there_yet() {
+        let mut agent = Agent::new("Test", (0, 0));
+        agent.hunger = HUNGER_EAT_THRESHOLD;
+        let hunger_before = agent.hunger;
+        let restaurant_position = (5, 0);
+        let _ = agent.tick(restaurant_position);
+        // Moved one cell toward the restaurant instead of eating.
+        assert_eq!(agent.position(), (1, 0));
+        // Hunger only rose (replan's decay) — Eat never actually ran.
+        assert_eq!(agent.hunger, hunger_before + HUNGER_DECAY_PER_TICK);
+    }
+
+    #[test]
+    fn eating_is_deferred_until_the_agent_reaches_the_restaurant() {
+        let mut agent = Agent::new("Test", (0, 0));
+        agent.hunger = HUNGER_EAT_THRESHOLD;
+        let restaurant_position = (1, 0);
+        let _ = agent.tick(restaurant_position); // ticks 1 cell closer, doesn't eat
+        assert_eq!(agent.position(), restaurant_position);
+        let hunger_at_restaurant = agent.hunger;
+        let _ = agent.tick(restaurant_position); // now at the restaurant: eats
+        assert!(agent.hunger < hunger_at_restaurant);
+    }
+
+    #[test]
+    fn resting_requires_being_at_the_agents_own_house_position() {
+        let mut agent = Agent::new("Test", (0, 0));
+        agent.claim_house(House::new((3, 0)));
+        agent.energy = ENERGY_MAX - ENERGY_REST_THRESHOLD; // due
+        let energy_before = agent.energy;
+        let _ = agent.tick(ORIGIN); // restaurant position irrelevant here
+        // Walked toward the house instead of resting in place.
+        assert_eq!(agent.position(), (1, 0));
+        assert_eq!(agent.energy, energy_before - ENERGY_DECAY_PER_TICK);
     }
 }

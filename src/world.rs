@@ -11,8 +11,12 @@
 //! (`Vec::pop`/`push`). There's never a point where two things hold the
 //! same `House` at once, so there's nothing to guard with runtime
 //! borrow-checking or reference counting.
+//!
+//! `World` also holds the one `Restaurant` — unlike a `House`, it's never
+//! claimed or moved, just a shared position every agent senses each tick
+//! (see `Agent::tick`) so Eat knows where to walk to.
 
-use crate::{Agent, House};
+use crate::{Agent, House, Restaurant};
 
 pub struct World {
     agents: Vec<Agent>,
@@ -21,20 +25,30 @@ pub struct World {
     /// given tick, some agent goes without — resolved deterministically by
     /// agent order (see `tick`), never randomness.
     available_houses: Vec<House>,
+    /// The shared place every agent eats at. One for now — the user asked
+    /// for shared eating, not multiple restaurants; a `Vec<Restaurant>` is
+    /// a small, separate extension if that's ever wanted.
+    restaurant: Restaurant,
 }
 
 impl World {
     #[must_use]
-    pub const fn new(agents: Vec<Agent>) -> Self {
+    pub const fn new(agents: Vec<Agent>, restaurant: Restaurant) -> Self {
         Self {
             agents,
             available_houses: Vec::new(),
+            restaurant,
         }
     }
 
     #[must_use]
     pub fn agents(&self) -> &[Agent] {
         &self.agents
+    }
+
+    #[must_use]
+    pub const fn restaurant(&self) -> &Restaurant {
+        &self.restaurant
     }
 
     /// Advances every agent by one tick, in a fixed order (index 0 first,
@@ -53,7 +67,7 @@ impl World {
             {
                 agent.claim_house(house);
             }
-            if let Some(house) = agent.tick() {
+            if let Some(house) = agent.tick(self.restaurant.position()) {
                 self.available_houses.push(house);
             }
         }
@@ -65,15 +79,22 @@ mod tests {
     use super::*;
     use crate::Career;
 
+    /// Arbitrary shared restaurant position for tests that don't care
+    /// where it is.
+    const RESTAURANT_POS: (i32, i32) = (0, 0);
+
     fn houseless_builder(name: &'static str) -> Agent {
-        let mut agent = Agent::new(name);
+        let mut agent = Agent::new(name, RESTAURANT_POS);
         agent.set_career(Career::Builder);
         agent
     }
 
     #[test]
     fn building_deposits_a_house_into_the_shared_pool_not_the_builder() {
-        let mut world = World::new(vec![houseless_builder("Builder")]);
+        let mut world = World::new(
+            vec![houseless_builder("Builder")],
+            Restaurant::new(RESTAURANT_POS),
+        );
         world.tick(); // neither need is due yet, so this tick: Produce(Build)
         assert_eq!(world.available_houses.len(), 1);
         assert!(world.agents()[0].home().is_none());
@@ -81,7 +102,10 @@ mod tests {
 
     #[test]
     fn a_built_house_is_claimed_by_a_houseless_agent_on_a_later_tick() {
-        let mut world = World::new(vec![houseless_builder("Builder")]);
+        let mut world = World::new(
+            vec![houseless_builder("Builder")],
+            Restaurant::new(RESTAURANT_POS),
+        );
         world.tick(); // builds a house, deposited into the pool
         world.tick(); // this tick: claims from the pool before acting
         assert!(world.agents()[0].home().is_some());
@@ -89,8 +113,14 @@ mod tests {
 
     #[test]
     fn a_scarce_house_goes_to_the_first_houseless_agent_in_order() {
-        let mut world = World::new(vec![Agent::new("A"), Agent::new("B")]);
-        world.available_houses.push(House::new());
+        let mut world = World::new(
+            vec![
+                Agent::new("A", RESTAURANT_POS),
+                Agent::new("B", RESTAURANT_POS),
+            ],
+            Restaurant::new(RESTAURANT_POS),
+        );
+        world.available_houses.push(House::new(RESTAURANT_POS));
         world.tick();
         assert!(world.agents()[0].home().is_some());
         assert!(world.agents()[1].home().is_none());
@@ -98,10 +128,10 @@ mod tests {
 
     #[test]
     fn an_agent_that_already_owns_a_house_does_not_take_from_the_pool() {
-        let mut agent = Agent::new("A");
-        agent.claim_house(House::new());
-        let mut world = World::new(vec![agent]);
-        world.available_houses.push(House::new());
+        let mut agent = Agent::new("A", RESTAURANT_POS);
+        agent.claim_house(House::new(RESTAURANT_POS));
+        let mut world = World::new(vec![agent], Restaurant::new(RESTAURANT_POS));
+        world.available_houses.push(House::new(RESTAURANT_POS));
         world.tick();
         assert_eq!(world.available_houses.len(), 1); // untouched
     }
